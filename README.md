@@ -177,3 +177,9 @@ tests/             pytest tests (pip install -r requirements-dev.txt, then pytes
 ```
 
 The page uses a vendored copy of Preact and htm (`app/static/vendor/`), so it works with no internet access. Edit the files in `app/static/` and rebuild the image to change the UI.
+
+## License
+
+[MIT](LICENSE). The vendored Preact (MIT) and htm (Apache 2.0) keep their own licenses, in `app/static/vendor/`.
+
+This project isn't affiliated with or endorsed by Drayton or Schneider Electric. "Wiser" is their trademark.
