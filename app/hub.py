@@ -55,7 +55,21 @@ class WiserHub:
             raise HubError("The hub sent a reply that isn't valid JSON.") from exc
         if not isinstance(data, dict):
             raise HubError("The hub sent an unexpected reply.")
+        data[SCHEDULES_KEY] = await self._read_schedules()
         return data
+
+    async def _read_schedules(self) -> dict[str, Any]:
+        """Schedules live in their own endpoint, grouped by type: {"Heating": [...], "OnOff": [...]}.
+
+        Only used for the "until 22:00" text, so any failure just means no schedules (the page
+        then says "Following the schedule") rather than a failed read.
+        """
+        try:
+            response = await self._client.get("/data/v2/schedules/")
+            data = response.json() if response.status_code == 200 else None
+        except (httpx.HTTPError, ValueError):
+            data = None
+        return data if isinstance(data, dict) else {}
 
     async def patch(self, resource: str, body: dict[str, Any]) -> None:
         """PATCH a resource such as 'Room/3' or 'System'. Not retried: a repeated write could double-apply."""
@@ -96,37 +110,61 @@ def _deg(tenths: Any) -> float | None:
 
 DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
+# WiserHub.read() puts the reply of /data/v2/schedules/ under this key of the domain data.
+SCHEDULES_KEY = "_schedules"
+
+
+def _day_points(entry: dict[str, Any]) -> list[tuple[Any, Any]]:
+    """A day's (HHMM, tenths) pairs. The schedules endpoint gives parallel lists,
+    {"Time": [630, 900], "DegreesC": [210, 170]} (as aioWiserHeatAPI reads them); a
+    "SetPoints" list of {"Time", "DegreesC"} objects is also accepted, for older hubs."""
+    if isinstance(entry.get("Time"), list):
+        return list(zip(entry["Time"], entry.get("DegreesC") or []))
+    return [(p.get("Time"), p.get("DegreesC")) for p in entry.get("SetPoints") or [] if isinstance(p, dict)]
+
 
 def _schedule_days(schedule: dict[str, Any]) -> list[list[list[Any]]] | None:
     """A hub heating schedule -> 7 lists (Monday first) of [minutes after midnight, degrees C or None].
 
-    The hub stores times as HHMM numbers (630 = 06:30) and setpoints in tenths. Days are
-    normally keyed by name; the Weekdays/Weekends/All keys are a fallback in case a hub groups them.
+    The hub stores times as HHMM numbers (630 = 06:30) and setpoints in tenths, with null or
+    -200 for off. Days are normally keyed by name; Weekdays/Weekends/All also occur.
     """
     days = []
     for i, day in enumerate(DAYS):
         entry = schedule.get(day) or schedule.get("Weekdays" if i < 5 else "Weekends") or schedule.get("All") or {}
         points = []
-        for point in entry.get("SetPoints") or []:
-            hhmm = point.get("Time")
+        for hhmm, tenths in _day_points(entry):
+            # Times past 23:59 (e.g. 3000 = sunrise in lighting schedules) aren't clock times.
             if isinstance(hhmm, int) and 0 <= hhmm <= 2359 and hhmm % 100 < 60:
-                points.append([hhmm // 100 * 60 + hhmm % 100, _deg(point.get("DegreesC"))])
+                points.append([hhmm // 100 * 60 + hhmm % 100, _deg(tenths)])
         days.append(sorted(points, key=lambda p: p[0]))
     return days if any(days) else None
 
 
+def _heating_schedules(domain: dict[str, Any]) -> dict[Any, dict[str, Any]]:
+    """Heating schedules by id, from the schedules endpoint ({"Heating": [...]}) or, failing
+    that, a "Schedule" list in the domain data."""
+    grouped = domain.get(SCHEDULES_KEY) or {}
+    found = [s for s in grouped.get("Heating") or [] if isinstance(s, dict)]
+    found += [
+        s for s in domain.get("Schedule") or [] if isinstance(s, dict) and s.get("Type", "Heating") == "Heating"
+    ]
+    schedules: dict[Any, dict[str, Any]] = {}
+    for s in found:
+        schedules.setdefault(s.get("id"), s)
+    return schedules
+
+
 def normalise(domain: dict[str, Any]) -> dict[str, Any]:
     system = domain.get("System") or {}
-    schedules = {
-        s.get("id"): s
-        for s in domain.get("Schedule") or []
-        if isinstance(s, dict) and s.get("Type", "Heating") == "Heating"
-    }
+    schedules = _heating_schedules(domain)
     rooms = []
     for r in domain.get("Room") or []:
-        origin = r.get("SetpointOrigin") or ""
+        # Both spellings occur; aioWiserHeatAPI checks both too, and counts any origin
+        # mentioning Boost (e.g. FromBoost) as a boost.
+        origin = r.get("SetpointOrigin") or r.get("SetPointOrigin") or ""
         mode = str(r.get("Mode") or "Auto").lower()
-        boost = origin == "FromBoost"
+        boost = "Boost" in origin
         override = (not boost) and (r.get("OverrideType") or "None") not in ("None", "")
         until = r.get("OverrideTimeoutUnixTime") or None
         schedule = schedules.get(r.get("ScheduleId"))
@@ -262,12 +300,12 @@ class MockHub:
                     "ScheduleId": self._schedule_id(rid),
                 }
             )
+        # As /data/v2/schedules/ gives them, which WiserHub.read() adds under SCHEDULES_KEY.
         schedules = [
             {
                 "id": sid,
-                "Type": "Heating",
                 **{
-                    day: {"SetPoints": [{"Time": t, "DegreesC": sp} for t, sp in self._points(sid, i)]}
+                    day: {"Time": [t for t, _ in self._points(sid, i)], "DegreesC": [sp for _, sp in self._points(sid, i)]}
                     for i, day in enumerate(DAYS)
                 },
             }
@@ -281,7 +319,7 @@ class MockHub:
             },
             "HeatingChannel": [{"id": 1, "HeatingRelayState": "On" if heating else "Off"}],
             "Room": rooms,
-            "Schedule": schedules,
+            SCHEDULES_KEY: {"Heating": schedules},
         }
 
     # -- same interface as WiserHub ---------------------------------------
@@ -299,8 +337,6 @@ class MockHub:
             override = body.get("RequestOverride")
             if override is not None:
                 self.away = override.get("Type") == 2
-                if "SetPoint" in override and self.away:
-                    self.away_limit = int(override["SetPoint"])
             return
         if resource.startswith("Room/"):
             room = self.rooms.get(int(resource.split("/", 1)[1]))
@@ -330,7 +366,8 @@ class MockHub:
                     if minutes <= 0:
                         room["ov"] = None
                     else:
-                        base = self._effective(rid)[0]
+                        # The hub boosts from the room's current temperature, not its target.
+                        base = int(round(room["temp"] * 2)) * 5
                         room["ov"] = {
                             "type": "Boost",
                             "sp": base + int(override.get("IncreaseSetPointBy", 20)),

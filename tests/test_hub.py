@@ -1,5 +1,9 @@
 """Tests for normalise(): turning the hub's raw /data/domain/ reply into what the page needs."""
-from app.hub import DAYS, normalise
+import asyncio
+
+import httpx
+
+from app.hub import DAYS, SCHEDULES_KEY, WiserHub, normalise
 
 
 def room(**fields):
@@ -53,6 +57,44 @@ def test_boost_is_not_also_an_override():
     assert r["boost"] is True
     assert r["override"] is False
     assert r["until"] == 1_700_000_000
+
+
+def test_boost_is_found_under_either_origin_spelling():
+    raw = room(OverrideType="Manual")
+    del raw["SetpointOrigin"]
+    raw["SetPointOrigin"] = "FromBoost"
+    assert normalise({"Room": [raw]})["rooms"][0]["boost"] is True
+
+
+def test_schedules_endpoint_format_is_read():
+    # /data/v2/schedules/ as aioWiserHeatAPI reads it: grouped by type, days as parallel lists.
+    week = {day: {"Time": [2200, 630, 900], "DegreesC": [170, 210, None]} for day in DAYS}
+    lights = {"id": 4, "Monday": {"Time": [3000], "Level": [100]}}
+    out = normalise({"Room": [room(ScheduleId=4)], SCHEDULES_KEY: {"Heating": [{"id": 4, **week}], "Level": [lights]}})
+    assert out["rooms"][0]["schedule"][0] == [[390, 21.0], [540, None], [1320, 17.0]]
+
+
+def fake_hub(schedules_status):
+    def reply(request):
+        if request.url.path == "/data/domain/":
+            return httpx.Response(200, json={"Room": [room(ScheduleId=4)]})
+        if request.url.path == "/data/v2/schedules/":
+            return httpx.Response(schedules_status, json={"Heating": [{"id": 4, "Monday": {"Time": [630], "DegreesC": [210]}}]})
+        return httpx.Response(404)
+
+    hub = WiserHub("hub", "secret")
+    hub._client = httpx.AsyncClient(base_url="http://hub", transport=httpx.MockTransport(reply))
+    return hub
+
+
+def test_real_hub_read_includes_schedules():
+    out = normalise(asyncio.run(fake_hub(200).read()))
+    assert out["rooms"][0]["schedule"][0] == [[390, 21.0]]
+
+
+def test_real_hub_read_survives_a_missing_schedules_endpoint():
+    out = normalise(asyncio.run(fake_hub(404).read()))
+    assert out["rooms"][0]["schedule"] is None
 
 
 def test_manual_override_keeps_its_end_time():

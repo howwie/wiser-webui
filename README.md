@@ -141,20 +141,35 @@ cd /volume1/docker/wiser-webui && sudo docker compose pull && sudo docker compos
 
 ## How sure are we about each hub call?
 
-The Wiser local API isn't officially documented, so these come from community projects. This table is honest about which calls were confirmed from sources and which come from memory of those projects.
+The Wiser local API isn't officially documented. Every call below has been checked against the source of [aioWiserHeatAPI](https://pypi.org/project/aioWiserHeatAPI/) 1.7.7, the library behind the Home Assistant Wiser integration, and sends the same thing. `tests/test_main.py` pins these payloads.
 
-| Action | What the server sends | Confidence |
+| Action | What the server sends | Matches aioWiserHeatAPI's |
 |---|---|---|
-| Read everything | `GET /data/domain/` with `SECRET` header | Confirmed in several sources |
-| Room schedules ("until 22:00") | Read from the same reply: `Schedule[]` matched by each room's `ScheduleId`, with `Monday`…`Sunday` → `SetPoints` of `{"Time": 630, "DegreesC": 210}` | From memory. If it's wrong, rooms just say "Following the schedule" as before |
-| Boost a room | `PATCH /data/v2/domain/Room/{id}` `{"RequestOverride":{"Type":"Boost","DurationMinutes":30,"IncreaseSetPointBy":20}}` | Confirmed from a real debug log of the Home Assistant integration |
-| Set a target | `PATCH …/Room/{id}` `{"RequestOverride":{"Type":"Manual","SetPoint":215}}` (tenths of a degree) | Likely right; matches the boost format |
-| Boost several rooms to one temperature | The same timed hold for each room: `{"RequestOverride":{"Type":"Manual","SetPoint":200,"DurationMinutes":120}}` | From memory, like the row below; not confirmed |
-| Change the target during a boost or timed hold | Same as setting a target, plus `"DurationMinutes"` for the time left, so it ends when the boost would have (as the Wiser app does) | From memory of community libraries ("set temperature for a duration"), not confirmed |
-| Cancel a boost, return to schedule | `{"RequestOverride":{"Type":"None"}}` and `{"Mode":"Auto"}` | From memory, not confirmed |
-| Manual mode | `{"Mode":"Manual"}` | From memory, not confirmed |
-| Away mode | `PATCH …/System` `{"RequestOverride":{"Type":2,…}}` (0 to cancel) | Least certain |
-| Eco mode | `PATCH …/System` `{"EcoModeEnabled":true}` | Field name confirmed; write format from memory |
+| Read everything | `GET /data/domain/` with `SECRET` header | `get_hub_data` (it uses `/data/v2/domain/`; both work) |
+| Room schedules ("until 22:00") | `GET /data/v2/schedules/`: `{"Heating": [...]}`, matched to rooms by `ScheduleId`; each day is `{"Time": [630, …], "DegreesC": [210, …]}`. If it fails, rooms just say "Following the schedule" | Schedule collection |
+| Boost a room | `PATCH /data/v2/domain/Room/{id}` `{"RequestOverride":{"Type":"Boost","DurationMinutes":30,"IncreaseSetPointBy":20}}` (the hub adds this to the room's current temperature) | `room.boost` |
+| Set a target | `PATCH …/Room/{id}` `{"RequestOverride":{"Type":"Manual","SetPoint":215}}` (tenths of a degree) | `room.set_target_temperature` |
+| Boost several rooms to one temperature | For each room: `{"RequestOverride":{"Type":"Manual","SetPoint":200,"DurationMinutes":120}}` | `room.set_target_temperature_for_duration` |
+| Change the target during a boost or timed hold | Same as setting a target, plus `"DurationMinutes"` for the time left, so it ends when the boost would have (as the Wiser app does) | `room.set_target_temperature_for_duration` |
+| Cancel a boost or hold | `{"RequestOverride":{"Type":"None"}}` | `room.cancel_overrides` |
+| Schedule or manual mode | `{"RequestOverride":{"Type":"None"}}` if a boost or hold is on, then `{"Mode":"Auto"}` or `{"Mode":"Manual"}` | `room.set_mode` |
+| Away mode | `PATCH …/System` `{"RequestOverride":{"Type":2}}` (0 to cancel); the hub uses its own away temperature | `system.set_away_mode_enabled` |
+| Eco mode | `PATCH …/System` `{"EcoModeEnabled":true}` | `system.set_eco_mode_enabled` |
+
+### Why not use aioWiserHeatAPI itself?
+
+The app has its own small hub client (`app/hub.py`) and only copies the library's payloads. Using the library directly would mean:
+
+- **More load on the hub.** Each update reads five endpoints (domain, network, schedules, status and OpenTherm); this app reads two. With a poll every 20 seconds while a page is open, that adds up on a small device.
+- **Behaviour we'd have to work around.** It retries every request up to 5 times, writes included (this app never retries a write, so a slow reply can't apply a change twice). It also writes its own config file when a temperature is set in manual mode, and calls itself "HomeAssistant" to the hub.
+- **A rewrite, not a swap.** The page's data, the demo hub and most tests are built on a plain read-and-patch interface. Moving to the library's object model would mean redoing them, and adding `aiohttp` next to `httpx`.
+- **Much more than we use.** It also covers hot water, lights, shutters, smart plugs, automations and schedule editing.
+
+What we give up:
+- **HTTPS for newer hubs.** The library switches to HTTPS for second-generation hubs on firmware 4.42.22 or later. This app uses plain HTTP, which works on hubs today. If a firmware update ever stops HTTP from working, copying that switch is a small change.
+- **Fixes when the hub's API changes,** which the library's maintainers would make.
+
+If the app grows to hot water or schedule editing, using the library becomes worth it.
 
 Newer hubs take writes under `/data/v2/domain`, older ones under `/data/domain`. The server tries v2 first and falls back automatically.
 

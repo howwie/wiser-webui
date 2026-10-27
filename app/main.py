@@ -469,13 +469,13 @@ async def hold_rooms(body: HoldIn) -> dict[str, Any]:
 
 @app.post("/api/rooms/{room_id}/mode")
 async def set_mode(room_id: int, body: ModeIn) -> dict[str, Any]:
-    store.require_room(room_id)
+    room = store.require_room(room_id)
     resource = f"Room/{room_id}"
-    if body.mode == "auto":
-        # Back to the schedule: switch mode and drop any hold/boost.
-        calls = [(resource, {"Mode": "Auto"}), (resource, {"RequestOverride": {"Type": "None"}})]
-    else:
-        calls = [(resource, {"Mode": "Manual"})]
+    calls: list[tuple[str, dict[str, Any]]] = []
+    # Like aioWiserHeatAPI's set_mode: drop any boost or hold first, then switch mode.
+    if room["boost"] or room["override"]:
+        calls.append((resource, {"RequestOverride": {"Type": "None"}}))
+    calls.append((resource, {"Mode": "Auto" if body.mode == "auto" else "Manual"}))
     await store.run(calls)
     return store.snapshot()
 
@@ -484,10 +484,9 @@ async def set_mode(room_id: int, body: ModeIn) -> dict[str, Any]:
 async def set_away(body: FlagIn) -> dict[str, Any]:
     if store.state is None:
         raise HTTPException(status_code=503, detail=store.error or "Still connecting to the hub.")
-    away_tenths = int(round((store.state["system"]["away_temp"] or 16.0) * 10))
-    override = {"Type": 2 if body.enabled else 0, "Originator": "App", "DurationMinutes": 0, "SetPoint": away_tenths}
+    # As aioWiserHeatAPI sends it: 2 is away, 0 cancels. The hub uses its own away temperature.
     await store.run(
-        [("System", {"RequestOverride": override})],
+        [("System", {"RequestOverride": {"Type": 2 if body.enabled else 0}})],
         verify=lambda s: s["system"]["away"] == body.enabled,
         unverified_message="The hub accepted the command but away mode didn't change.",
     )

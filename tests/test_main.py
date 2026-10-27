@@ -99,6 +99,38 @@ def test_hold_with_an_unknown_room_changes_nothing(monkeypatch):
     assert not any(r["override"] for r in snap["rooms"])
 
 
+class RecordingHub(MockHub):
+    def __init__(self):
+        super().__init__()
+        self.sent = []
+
+    async def patch(self, resource, body):
+        self.sent.append((resource, body))
+        await super().patch(resource, body)
+
+
+def test_writes_match_aiowiserheatapi(monkeypatch):
+    """The payloads aioWiserHeatAPI 1.7.7 sends for the same actions."""
+    hub = RecordingHub()
+    monkeypatch.setattr(server, "store", Store(hub, mock=True), raising=False)
+
+    async def go():
+        await server.store.refresh()
+        await server.set_boost(1, BoostIn(minutes=30))
+        await server.set_mode(1, server.ModeIn(mode="manual"))  # cancels the boost first
+        await server.set_away(server.FlagIn(enabled=True))
+        await server.set_away(server.FlagIn(enabled=False))
+
+    asyncio.run(go())
+    assert hub.sent == [
+        ("Room/1", {"RequestOverride": {"Type": "Boost", "DurationMinutes": 30, "IncreaseSetPointBy": 20}}),
+        ("Room/1", {"RequestOverride": {"Type": "None"}}),
+        ("Room/1", {"Mode": "Manual"}),
+        ("System", {"RequestOverride": {"Type": 2}}),
+        ("System", {"RequestOverride": {"Type": 0}}),
+    ]
+
+
 def test_room_order_is_saved_and_read_back(tmp_path):
     path = tmp_path / "data" / "settings.json"
     Settings(path).save_room_order([3, 1, 2])
