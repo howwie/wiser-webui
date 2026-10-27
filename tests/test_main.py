@@ -1,5 +1,6 @@
 """Tests for the server's own safety nets: the Host check and surviving bad hub replies."""
 import asyncio
+import time
 
 import pytest
 
@@ -7,7 +8,7 @@ import app.main as server
 from app.hub import MockHub
 from fastapi import HTTPException
 
-from app.main import BoostIn, OrderIn, Settings, Store, TargetIn, host_allowed
+from app.main import BoostIn, HoldIn, OrderIn, Settings, Store, TargetIn, host_allowed
 
 
 @pytest.mark.parametrize(
@@ -65,6 +66,37 @@ def test_second_target_change_keeps_the_hold_end_time(monkeypatch):
     )
     assert second["target"] == 22.5
     assert abs(second["until"] - first["until"]) <= 60
+
+
+def test_hold_sets_several_rooms_to_one_temperature_for_a_while(monkeypatch):
+    monkeypatch.setattr(server, "store", Store(MockHub(), mock=True), raising=False)
+
+    async def go():
+        await server.store.refresh()
+        await server.set_boost(2, BoostIn(minutes=30))  # a boost is replaced by the hold
+        return await server.hold_rooms(HoldIn(rooms=[1, 2, 1], temp=20.2, minutes=120))
+
+    snap = asyncio.run(go())
+    rooms = {r["id"]: r for r in snap["rooms"]}
+    for room_id in (1, 2):
+        room = rooms[room_id]
+        assert (room["target"], room["override"], room["boost"]) == (20.0, True, False)
+        assert abs(room["until"] - (time.time() + 120 * 60)) <= 60
+    assert not rooms[3]["override"]
+
+
+def test_hold_with_an_unknown_room_changes_nothing(monkeypatch):
+    monkeypatch.setattr(server, "store", Store(MockHub(), mock=True), raising=False)
+
+    async def go():
+        await server.store.refresh()
+        with pytest.raises(HTTPException) as caught:
+            await server.hold_rooms(HoldIn(rooms=[1, 99], temp=20, minutes=60))
+        return caught.value.status_code, server.store.snapshot()
+
+    status, snap = asyncio.run(go())
+    assert status == 404
+    assert not any(r["override"] for r in snap["rooms"])
 
 
 def test_room_order_is_saved_and_read_back(tmp_path):

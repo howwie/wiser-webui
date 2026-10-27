@@ -109,6 +109,60 @@ function BoostDialog({ room, onPick, onClose }) {
   `;
 }
 
+// Several rooms to one temperature for a while: something the Wiser app can't do, as its boost
+// works one room at a time and adds a fixed amount to each room's own target.
+function HoldDialog({ rooms, onApply, onClose }) {
+  const ref = useRef(null);
+  const [picked, setPicked] = useState([]);
+  const [temp, setTemp] = useState(20);
+  const [minutes, setMinutes] = useState(120);
+  useEffect(() => { ref.current.showModal(); }, []);
+  const close = () => ref.current.close();
+  const toggle = (id, on) => setPicked((ids) => (on ? [...ids, id] : ids.filter((x) => x !== id)));
+  const step = (delta) => setTemp((t) => clamp(t + delta, MIN_TEMP, MAX_TEMP));
+  const count = picked.length;
+  return html`
+    <dialog ref=${ref} class="dialog" aria-labelledby="hold-title" onClose=${onClose}
+      onClick=${(e) => e.target === ref.current && close()}>
+      <div class="dialog-body">
+        <h2 id="hold-title">Boost rooms</h2>
+        <p class="hint">Heats the rooms you pick to one temperature, then each goes back to normal by itself.</p>
+        <fieldset class="pick-rooms">
+          <legend class="caption">Rooms</legend>
+          ${rooms.map((room) => html`
+            <label class="check pick-row" key=${room.id}>
+              <input type="checkbox" checked=${picked.includes(room.id)} onChange=${(e) => toggle(room.id, e.currentTarget.checked)} />
+              <span class="pick-name">${room.name}</span>
+              <span class="pick-temp">${deg(halfDeg(room.temp))}</span>
+            </label>
+          `)}
+        </fieldset>
+        <div class="stepper">
+          <span class="caption" id="hold-temp-label">Temperature</span>
+          <div class="stepper-mid">
+            <button class="step" aria-label="Lower by half a degree" disabled=${temp <= MIN_TEMP} onClick=${() => step(-0.5)}>−</button>
+            <span class="target" aria-live="polite" aria-labelledby="hold-temp-label">${deg(temp)}</span>
+            <button class="step" aria-label="Raise by half a degree" disabled=${temp >= MAX_TEMP} onClick=${() => step(0.5)}>+</button>
+          </div>
+        </div>
+        <div class="dialog-options" role="group" aria-label="For how long">
+          ${BOOST_OPTIONS.map(([value, label]) => html`
+            <button class="btn" key=${value} aria-pressed=${minutes === value}
+              data-kind=${minutes === value ? "primary" : undefined} onClick=${() => setMinutes(value)}>${label}</button>
+          `)}
+        </div>
+        <div class="dialog-foot">
+          <button class="btn" data-kind="quiet" onClick=${close}>Cancel</button>
+          <button class="btn" data-kind="primary" disabled=${!count}
+            onClick=${() => { close(); onApply(picked, temp, minutes); }}>
+            ${count ? `Boost ${count} room${count > 1 ? "s" : ""}` : "Pick a room"}
+          </button>
+        </div>
+      </div>
+    </dialog>
+  `;
+}
+
 function RoomCard({ room, system, actions }) {
   const heating = room.demand > 0;
   const target = room.target;
@@ -224,6 +278,7 @@ function App() {
   const [local, setLocal] = useState({}); // optimistic values by room id (and "sys")
   const [toast, setToast] = useState(null);
   const [boostRoomId, setBoostRoomId] = useState(null);
+  const [holding, setHolding] = useState(false); // the "Boost rooms" dialog is open
   const [, setMinute] = useState(0);
   const [arranging, setArranging] = useState(false);
   const [announcement, setAnnouncement] = useState("");
@@ -366,6 +421,18 @@ function App() {
       const seq = mutate(room.id, { busy: true });
       send(room.id, seq, `/api/rooms/${room.id}/boost`, { minutes });
     },
+    hold(ids, temp, minutes) {
+      const until = Date.now() / 1000 + minutes * 60;
+      const pending = ids.map((id) => [id, mutate(id, { target: temp, override: true, boost: false, until, busy: true })]);
+      request("POST", "/api/rooms/hold", { rooms: ids, temp, minutes })
+        .then(setData)
+        .catch((err) => showToast(err.message))
+        .finally(() => setLocal((l) => {
+          const next = { ...l };
+          for (const [id, seq] of pending) if (seqs.current[id] === seq) delete next[id];
+          return next;
+        }));
+    },
     away(enabled) {
       const seq = mutate("sys", { away: enabled });
       send("sys", seq, "/api/system/away", { enabled });
@@ -433,7 +500,12 @@ function App() {
         ? html`<p class="notice">No rooms yet. Once the hub connects, your rooms appear here.</p>`
         : arranging
         ? html`<${ArrangeList} rooms=${rooms} onMove=${actions.move} onDone=${() => setArranging(false)} />`
-        : html`<section class="rooms" aria-label="Rooms">
+        : html`${rooms.length > 1 && html`
+            <div class="toolbar">
+              <button class="btn" onClick=${() => setHolding(true)}>Boost rooms…</button>
+            </div>
+          `}
+          <section class="rooms" aria-label="Rooms">
             ${rooms.map((room) => html`<${RoomCard} key=${room.id} room=${room} system=${system} actions=${actions} />`)}
           </section>`}
 
@@ -455,6 +527,7 @@ function App() {
       <p class="sr-only" aria-live="polite">${announcement}</p>
     </main>
     ${boostRoom && html`<${BoostDialog} room=${boostRoom} onPick=${actions.boost} onClose=${() => setBoostRoomId(null)} />`}
+    ${holding && html`<${HoldDialog} rooms=${rooms} onApply=${actions.hold} onClose=${() => setHolding(false)} />`}
     ${toast &&html`<div class="toast" role="status">${toast}</div>`}
   `;
 }

@@ -4,7 +4,7 @@ A small web app to control a Drayton Wiser heating system from any browser, with
 One Python container reads your Wiser Heat Hub over your home network and serves both the page and a JSON API.
 Your hub secret stays on the server and never reaches the browser.
 
-**What you can do:** see every room's temperature, change its target, switch it between schedule and manual, boost it for 30 minutes to 2 hours, and turn away mode and eco mode on or off. The page updates itself, including when someone changes something in the Wiser app.
+**What you can do:** see every room's temperature, change its target, switch it between schedule and manual, boost it for 30 minutes to 3 hours, boost several rooms at once to the same temperature (which the Wiser app can't do), and turn away mode and eco mode on or off. The page updates itself, including when someone changes something in the Wiser app.
 
 ## Try it first (no hub needed)
 
@@ -37,6 +37,12 @@ Open `http://<nas-address>:8080`. You'll see five demo rooms and a banner saying
 | `WISER_BOOST_INCREASE` | Degrees a boost adds. Default 2 |
 | `WISER_MOCK` | `1` runs demo data with no hub |
 | `WISER_DATA_DIR` | Where saved settings (the room order) go. Default `data` next to where you start the server; the Docker image uses `/srv/data`, kept in the `wiser-data` volume |
+
+## Boosting several rooms
+
+**Boost rooms…** above the rooms heats the rooms you pick to one temperature for 30 minutes to 3 hours: say the bedroom at 15° and the living room at 16°, both to 20° for 2 hours. A normal boost adds a fixed amount to each room's own target, so the rooms would end up at different temperatures.
+
+Each room gets a timed hold, so its card says "Held at 20.0° until 15:30" and it goes back to its schedule (or manual setting) by itself when the time is up. The ✕ next to that line ends it early for one room.
 
 ## Arranging rooms
 
@@ -143,6 +149,7 @@ The Wiser local API isn't officially documented, so these come from community pr
 | Room schedules ("until 22:00") | Read from the same reply: `Schedule[]` matched by each room's `ScheduleId`, with `Monday`…`Sunday` → `SetPoints` of `{"Time": 630, "DegreesC": 210}` | From memory. If it's wrong, rooms just say "Following the schedule" as before |
 | Boost a room | `PATCH /data/v2/domain/Room/{id}` `{"RequestOverride":{"Type":"Boost","DurationMinutes":30,"IncreaseSetPointBy":20}}` | Confirmed from a real debug log of the Home Assistant integration |
 | Set a target | `PATCH …/Room/{id}` `{"RequestOverride":{"Type":"Manual","SetPoint":215}}` (tenths of a degree) | Likely right; matches the boost format |
+| Boost several rooms to one temperature | The same timed hold for each room: `{"RequestOverride":{"Type":"Manual","SetPoint":200,"DurationMinutes":120}}` | From memory, like the row below; not confirmed |
 | Change the target during a boost or timed hold | Same as setting a target, plus `"DurationMinutes"` for the time left, so it ends when the boost would have (as the Wiser app does) | From memory of community libraries ("set temperature for a duration"), not confirmed |
 | Cancel a boost, return to schedule | `{"RequestOverride":{"Type":"None"}}` and `{"Mode":"Auto"}` | From memory, not confirmed |
 | Manual mode | `{"Mode":"Manual"}` | From memory, not confirmed |
@@ -169,6 +176,7 @@ Away and eco are checked after every change: if the hub accepts the command but 
 | `GET /api/events` | live updates (server-sent events) |
 | `POST /api/rooms/{id}/target` | `{"temp": 21.5}` (5 to 30, steps of 0.5) |
 | `POST /api/rooms/{id}/boost` | `{"minutes": 60}` (30, 60, 120, 180; 0 cancels) |
+| `POST /api/rooms/hold` | `{"rooms": [1, 3], "temp": 20, "minutes": 120}` (30, 60, 120, 180) |
 | `POST /api/rooms/{id}/mode` | `{"mode": "auto"}` or `{"mode": "manual"}` |
 | `POST /api/system/away` | `{"enabled": true}` |
 | `POST /api/system/eco` | `{"enabled": true}` |

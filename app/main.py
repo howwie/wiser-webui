@@ -346,6 +346,12 @@ class BoostIn(BaseModel):
     increase: float | None = Field(default=None, ge=0.5, le=5)
 
 
+class HoldIn(BaseModel):
+    rooms: list[int] = Field(min_length=1, max_length=200)
+    temp: float = Field(ge=5, le=30)
+    minutes: Literal[30, 60, 120, 180]
+
+
 class ModeIn(BaseModel):
     mode: Literal["auto", "manual"]
 
@@ -444,6 +450,20 @@ async def set_boost(room_id: int, body: BoostIn) -> dict[str, Any]:
             }
         }
     await store.run([(f"Room/{room_id}", payload)])
+    return store.snapshot()
+
+
+@app.post("/api/rooms/hold")
+async def hold_rooms(body: HoldIn) -> dict[str, Any]:
+    """Heat several rooms to the same temperature for a while (the Wiser app can only boost one
+    room at a time, by a fixed amount). Each room gets a timed manual override, so it goes back
+    to its schedule or manual setting by itself when the time is up."""
+    room_ids = list(dict.fromkeys(body.rooms))
+    for room_id in room_ids:
+        store.require_room(room_id)  # check them all before changing any
+    tenths = int(round(body.temp * 2)) * 5  # nearest 0.5 C, in tenths
+    override = {"Type": "Manual", "SetPoint": tenths, "DurationMinutes": body.minutes}
+    await store.run([(f"Room/{room_id}", {"RequestOverride": override}) for room_id in room_ids])
     return store.snapshot()
 
 
