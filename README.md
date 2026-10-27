@@ -4,7 +4,7 @@ A small web app to control a Drayton Wiser heating system from any browser, with
 One Python container reads your Wiser Heat Hub over your home network and serves both the page and a JSON API.
 Your hub secret stays on the server and never reaches the browser.
 
-**What you can do:** see every room's temperature, change its target, switch it between schedule and manual, boost it for 30 minutes to 3 hours, boost several rooms at once to the same temperature (which the Wiser app can't do), check the signal and battery of each room's valves and thermostat, and turn away mode and eco mode on or off. The page updates itself, including when someone changes something in the Wiser app.
+**What you can do:** see every room's temperature, change its target, switch it between schedule and manual, boost it for 30 minutes to 3 hours, boost several rooms at once to the same temperature (which the Wiser app can't do), check the signal and battery of each room's valves and thermostat, switch Wiser smart plugs on and off, and turn away mode and eco mode on or off. The page updates itself, including when someone changes something in the Wiser app.
 
 ## Try it first (no hub needed)
 
@@ -51,6 +51,18 @@ The bars at the top of each room card show the signal of the room's **weakest** 
 The list also shows what each device is connected to. Wiser devices use Zigbee, a mesh network, so a valve far from the hub can reach it through another device, such as a smart plug or a room thermostat: "Connected through Landing smart plug". For a device connected that way, the dBm readings are shown without saying who hears whom, as it isn't known whether they're of that link or of the hub.
 
 The bars follow the hub's own rating, as in the Wiser app: 4 for "Very good", 3 for "Good". Those two have been seen on a real hub. The weaker ratings are expected to be "Medium" (2), "Poor" (1) and "No signal" (0), but those names are from memory, not confirmed. A device whose rating isn't one of these shows the hub's word as it is, and gets its bars from its radio reading instead: 4 from −62 dBm, 3 from −75, 2 from −85, 1 below that. A valve with a poor signal can miss commands; moving the hub, or adding a Wiser smart plug between them as a repeater, usually helps.
+
+## Smart plugs
+
+Wiser smart plugs appear under **Smart plugs**, below the rooms, with the room they belong to. Each card has:
+
+- **An on/off switch.** In Manual mode the plug stays as you set it. Following its schedule, the hub keeps your change until the schedule next switches it. A plug takes a moment to switch over Zigbee, so the card says "Switching on…" until the plug confirms it (the server waits up to 8 seconds); if it doesn't, the page says so.
+- **Signal bars.** Tap them for its dBm reading. A plug is a repeater, so the hub reports no single device it's connected to.
+- **Schedule or Manual.**
+- **Power now and energy used,** as the plug reports them. The energy total is taken to be in watt-hours and shown in kWh; that unit isn't confirmed.
+- **Off in away mode:** whether turning on away mode switches the plug off, or leaves it alone.
+
+A plug is also a Zigbee repeater, so it can appear in a room's device list as what a valve is connected through. Plugs are mains powered, so they have no battery; their signal rating is "Online", so their bars come from the dBm reading.
 
 ## Batteries
 
@@ -170,6 +182,7 @@ The Wiser local API isn't officially documented. Every call below has been check
 | Change the target during a boost or timed hold | Same as setting a target, plus `"DurationMinutes"` for the time left, so it ends when the boost would have (as the Wiser app does) | `room.set_target_temperature_for_duration` |
 | Cancel a boost or hold | `{"RequestOverride":{"Type":"None"}}` | `room.cancel_overrides` |
 | Schedule or manual mode | `{"RequestOverride":{"Type":"None"}}` if a boost or hold is on, then `{"Mode":"Auto"}` or `{"Mode":"Manual"}` | `room.set_mode` |
+| Smart plugs | Read from each `SmartPlug` entry: `OutputState`, `Mode`, `ScheduledState`, `AwayAction`, `InstantaneousDemand`, `CurrentSummationDelivered`, `RoomId`. Writes: `PATCH …/SmartPlug/{id}` with `{"RequestOutput":"On"}` (or `"Off"`), `{"Mode":"Auto"}` (or `"Manual"`), `{"AwayAction":"Off"}` (or `"NoChange"`) | Smart plug `turn_on`, `turn_off`, `set_mode`, `set_away_mode_action` |
 | Away mode | `PATCH …/System` `{"RequestOverride":{"Type":2}}` (0 to cancel); the hub uses its own away temperature | `system.set_away_mode_enabled` |
 | Eco mode | `PATCH …/System` `{"EcoModeEnabled":true}` | `system.set_eco_mode_enabled` |
 
@@ -210,6 +223,9 @@ Away and eco are checked after every change: if the hub accepts the command but 
 | `POST /api/rooms/{id}/boost` | `{"minutes": 60}` (30, 60, 120, 180; 0 cancels) |
 | `POST /api/rooms/hold` | `{"rooms": [1, 3], "temp": 20, "minutes": 120}` (30, 60, 120, 180) |
 | `POST /api/rooms/{id}/mode` | `{"mode": "auto"}` or `{"mode": "manual"}` |
+| `POST /api/plugs/{id}/power` | `{"enabled": true}` (on) or `false` (off) |
+| `POST /api/plugs/{id}/mode` | `{"mode": "auto"}` or `{"mode": "manual"}` |
+| `POST /api/plugs/{id}/away` | `{"enabled": true}` (off in away mode) or `false` (no change) |
 | `POST /api/system/away` | `{"enabled": true}` |
 | `POST /api/system/eco` | `{"enabled": true}` |
 | `PUT /api/rooms/order` | `{"order": [3, 1, 2]}` (room ids, first to last) |

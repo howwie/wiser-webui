@@ -131,6 +131,64 @@ def test_writes_match_aiowiserheatapi(monkeypatch):
     ]
 
 
+def test_plug_commands_match_aiowiserheatapi(monkeypatch):
+    hub = RecordingHub()
+    hub.PLUG_SWITCH_SECONDS = 0  # switch at once, so the test doesn't wait
+    monkeypatch.setattr(server, "store", Store(hub, mock=True), raising=False)
+    plug = MockHub.PLUG_ID
+
+    async def go():
+        await server.store.refresh()
+        await server.set_plug_mode(plug, server.ModeIn(mode="manual"))
+        await server.set_plug_power(plug, server.FlagIn(enabled=True))
+        on = next(p for p in server.store.snapshot()["plugs"] if p["id"] == plug)
+        await server.set_plug_away(plug, server.FlagIn(enabled=False))
+        await server.set_plug_power(plug, server.FlagIn(enabled=False))
+        off = next(p for p in server.store.snapshot()["plugs"] if p["id"] == plug)
+        return on, off
+
+    on, off = asyncio.run(go())
+    assert hub.sent == [
+        (f"SmartPlug/{plug}", {"Mode": "Manual"}),
+        (f"SmartPlug/{plug}", {"RequestOutput": "On"}),
+        (f"SmartPlug/{plug}", {"AwayAction": "NoChange"}),
+        (f"SmartPlug/{plug}", {"RequestOutput": "Off"}),
+    ]
+    assert (on["on"], on["mode"], on["power_w"]) == (True, "manual", 35)
+    assert (off["on"], off["away_off"], off["power_w"]) == (False, False, 0)
+
+
+def test_plug_that_does_not_switch_in_time_is_reported(monkeypatch):
+    hub = MockHub()
+    hub.PLUG_SWITCH_SECONDS = 60  # the plug never confirms within the wait
+    monkeypatch.setattr(server, "store", Store(hub, mock=True), raising=False)
+    monkeypatch.setattr(server, "PLUG_SETTLE_SECONDS", 1.5)
+
+    async def go():
+        await server.store.refresh()
+        await server.set_plug_mode(MockHub.PLUG_ID, server.ModeIn(mode="manual"))
+        with pytest.raises(HTTPException) as caught:
+            await server.set_plug_power(MockHub.PLUG_ID, server.FlagIn(enabled=True))
+        plug = server.store.snapshot()["plugs"][0]
+        return caught.value, plug
+
+    error, plug = asyncio.run(go())
+    assert error.status_code == 502 and "hasn't switched on yet" in error.detail
+    assert (plug["on"], plug["switching_to"]) == (False, True)
+
+
+def test_unknown_plug_is_refused(monkeypatch):
+    monkeypatch.setattr(server, "store", Store(MockHub(), mock=True), raising=False)
+
+    async def go():
+        await server.store.refresh()
+        with pytest.raises(HTTPException) as caught:
+            await server.set_plug_power(99, server.FlagIn(enabled=True))
+        return caught.value.status_code
+
+    assert asyncio.run(go()) == 404
+
+
 def test_room_order_is_saved_and_read_back(tmp_path):
     path = tmp_path / "data" / "settings.json"
     Settings(path).save_room_order([3, 1, 2])

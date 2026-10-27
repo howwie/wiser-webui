@@ -173,6 +173,33 @@ def test_plug_name_that_already_says_plug_is_kept():
     assert out["rooms"][0]["devices"][0]["parent"]["name"] == "Master bedroom plug"
 
 
+def test_smart_plug_as_the_hub_reports_it():
+    # Taken from a real hub (serial number and other unused fields left out).
+    plug = {"id": 8, "ManualState": "Off", "Name": "Master bedroom plug", "Mode": "Manual", "AwayAction": "Off",
+            "RoomId": 4, "OutputState": "Off", "ControlSource": "FromManualMode",
+            "CurrentSummationDelivered": 2030, "InstantaneousDemand": 0, "TargetState": "Off"}
+    device = {"id": 8, "NodeId": 21496, "ProductType": "SmartPlug", "DisplayedSignalStrength": "Online",
+              "ReceptionOfDevice": {"Rssi": -81, "Lqi": 76}}
+    out = normalise({"Room": [room(id=4, Name="Master Bedroom")], "Device": [device], "SmartPlug": [plug]})
+    assert out["plugs"] == [{
+        "id": 8, "name": "Master bedroom plug", "room": "Master Bedroom", "on": False, "switching_to": None,
+        "mode": "manual", "scheduled_on": None, "power_w": 0, "energy": 2030, "away_off": True,
+        "device": {"id": 8, "name": "Smart plug", "signal": 38, "signal_label": "Online", "hub_hears_dbm": -81,
+                   "device_hears_dbm": None, "battery": None, "repeater": True, "parent": None},
+    }]
+
+
+def test_plug_switching_and_connection():
+    plug = {"id": 8, "Name": "Hall", "OutputState": "Off", "TargetState": "On"}
+    devices = [
+        {"id": 0, "ProductType": "Controller", "NodeId": 100},
+        {"id": 8, "ProductType": "SmartPlug", "NodeId": 108, "ParentNodeId": 100},
+    ]
+    out = normalise({"Device": devices, "SmartPlug": [plug]})["plugs"][0]
+    assert (out["on"], out["switching_to"]) == (False, True)
+    assert out["device"]["parent"] == {"name": "the hub", "hub": True}
+
+
 def test_room_without_devices():
     assert only_room()["devices"] == []
 

@@ -179,6 +179,17 @@ h1 { margin: 0; font-size: 1.75rem; font-weight: 650; letter-spacing: -0.02em; }
 /* A bigger invisible hit area for fingers, without changing the layout. */
 .icon-btn::before { content: ""; position: absolute; inset: -6px; }
 
+/* Smart plugs */
+.section-title { margin: 28px 0 12px; font-size: 1.1rem; font-weight: 600; }
+.plug-room { margin: 2px 0 0; color: var(--muted); font-size: 0.85rem; }
+.plug-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.plug-state { margin: 0; font-size: 2.25rem; font-weight: 300; line-height: 1.1; }
+.plug .status { margin: 4px 0 0; }
+.plug-meter { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 0.9rem; }
+.plug-meter strong { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.pill[data-kind="on"] { background: var(--heat-soft); color: var(--heat-ink); font-weight: 600; }
+.switch[data-pending="true"] { opacity: 0.6; }
+
 /* Signal: quiet unless a device is weak. */
 .pills { align-items: center; }
 .signal-btn { width: 28px; height: 28px; margin: -4px -4px -4px 0; border-color: transparent; background: transparent; color: var(--muted); }

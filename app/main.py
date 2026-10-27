@@ -42,6 +42,7 @@ SECRET = os.getenv("WISER_SECRET", "").strip()
 PASSWORD = os.getenv("WISER_UI_PASSWORD", "")
 POLL_SECONDS = max(5.0, float(os.getenv("WISER_POLL_SECONDS", "20")))
 BOOST_INCREASE = float(os.getenv("WISER_BOOST_INCREASE", "2"))
+PLUG_SETTLE_SECONDS = 8  # how long to wait for a smart plug to report that it has switched
 ALLOWED_HOSTS = {h.strip().lower() for h in os.getenv("WISER_ALLOWED_HOSTS", "").split(",") if h.strip()}
 DATA_DIR = Path(os.getenv("WISER_DATA_DIR", "data"))
 
@@ -104,7 +105,7 @@ class Store:
             queue.put_nowait(None)
 
     def snapshot(self) -> dict[str, Any]:
-        base = self.state or {"rooms": [], "system": None}
+        base = self.state or {"rooms": [], "plugs": [], "system": None}
         # Rooms in the saved order; any the order doesn't mention (e.g. new ones) follow in hub order.
         rank = {room_id: i for i, room_id in enumerate(self.settings.room_order)}
         rooms = sorted(base["rooms"], key=lambda r: rank.get(r["id"], len(rank)))
@@ -162,8 +163,14 @@ class Store:
         calls: list[tuple[str, dict[str, Any]]],
         verify: Callable[[dict[str, Any]], bool] | None = None,
         unverified_message: str = "",
+        settle_seconds: float = 0,
     ) -> None:
-        """Send writes to the hub, re-read, and (optionally) check the change really took effect."""
+        """Send writes to the hub, re-read, and (optionally) check the change really took effect.
+
+        With settle_seconds, a change that isn't visible yet is re-read once a second for up to
+        that long first: a smart plug only reports its new state once it has switched, which
+        takes a moment over Zigbee.
+        """
         async with self.lock:
             failure: str | None = None
             try:
@@ -174,6 +181,10 @@ class Store:
                 failure = str(exc)
                 log.warning("Write failed: %s", failure)
             await self._read_locked()  # always resync, even after a failure
+            deadline = time.monotonic() + settle_seconds
+            while failure is None and verify and self.state and not verify(self.state) and time.monotonic() < deadline:
+                await asyncio.sleep(1)
+                await self._read_locked()
             if failure is None and verify and self.state and not verify(self.state):
                 failure = unverified_message
                 log.warning("Write accepted but had no effect: %s", failure)
@@ -502,6 +513,45 @@ async def set_eco(body: FlagIn) -> dict[str, Any]:
         verify=lambda s: s["system"]["eco"] == body.enabled,
         unverified_message="The hub accepted the command but eco mode didn't change.",
     )
+    return store.snapshot()
+
+
+def require_plug(plug_id: int) -> None:
+    if store.state is None:
+        raise HTTPException(status_code=503, detail=store.error or "Still connecting to the hub.")
+    if not any(p["id"] == plug_id for p in store.state.get("plugs", [])):
+        raise HTTPException(status_code=404, detail="No such smart plug.")
+
+
+# Smart plug commands, as aioWiserHeatAPI's smart plug sends them (PATCH SmartPlug/{id}).
+@app.post("/api/plugs/{plug_id}/power")
+async def set_plug_power(plug_id: int, body: FlagIn) -> dict[str, Any]:
+    """On or off. In Manual mode it stays that way; following a schedule, the hub keeps it until
+    the schedule next changes."""
+    require_plug(plug_id)
+    state = "on" if body.enabled else "off"
+    await store.run(
+        [(f"SmartPlug/{plug_id}", {"RequestOutput": "On" if body.enabled else "Off"})],
+        verify=lambda s: any(p["id"] == plug_id and p["on"] == body.enabled for p in s.get("plugs", [])),
+        unverified_message=f"The hub accepted the command, but the plug hasn't switched {state} yet. "
+        "It may be out of range; the page will update if it does.",
+        settle_seconds=PLUG_SETTLE_SECONDS,
+    )
+    return store.snapshot()
+
+
+@app.post("/api/plugs/{plug_id}/mode")
+async def set_plug_mode(plug_id: int, body: ModeIn) -> dict[str, Any]:
+    require_plug(plug_id)
+    await store.run([(f"SmartPlug/{plug_id}", {"Mode": "Auto" if body.mode == "auto" else "Manual"})])
+    return store.snapshot()
+
+
+@app.post("/api/plugs/{plug_id}/away")
+async def set_plug_away(plug_id: int, body: FlagIn) -> dict[str, Any]:
+    """Whether away mode turns the plug off ("Off") or leaves it alone ("NoChange")."""
+    require_plug(plug_id)
+    await store.run([(f"SmartPlug/{plug_id}", {"AwayAction": "Off" if body.enabled else "NoChange"})])
     return store.snapshot()
 
 

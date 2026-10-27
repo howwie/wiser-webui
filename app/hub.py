@@ -207,6 +207,24 @@ def _battery(d: dict[str, Any]) -> dict[str, Any] | None:
     return {"percent": percent, "level": _signal_label(level), "volts": volts}
 
 
+def _device_info(device_id: Any, d: dict[str, Any], name: str) -> dict[str, Any]:
+    """A device's name, signal and battery, from its entry in the domain's Device list."""
+    # Each direction has its own reading: the hub hearing the device (ReceptionOfDevice) and the
+    # device hearing the hub (ReceptionOfController). The weaker one is the one that matters.
+    hub_hears = _rssi(d.get("ReceptionOfDevice"))
+    device_hears = _rssi(d.get("ReceptionOfController"))
+    readings = [r for r in (hub_hears, device_hears) if r is not None]
+    return {
+        "id": device_id,
+        "name": name,
+        "signal": _signal_percent(min(readings)) if readings else None,
+        "signal_label": _signal_label(d.get("DisplayedSignalStrength")),
+        "hub_hears_dbm": hub_hears,
+        "device_hears_dbm": device_hears,
+        "battery": _battery(d),
+    }
+
+
 def _room_devices(r: dict[str, Any], devices: dict[Any, dict[str, Any]]) -> list[dict[str, Any]]:
     """The room's valves and thermostat, with each one's signal. Rooms list their devices' ids
     (as aioWiserHeatAPI matches them); the readings are in the domain's Device list."""
@@ -216,23 +234,8 @@ def _room_devices(r: dict[str, Any], devices: dict[Any, dict[str, Any]]) -> list
         d = devices.get(device_id)
         if not d:
             continue
-        # Each direction has its own reading: the hub hearing the device (ReceptionOfDevice) and the
-        # device hearing the hub (ReceptionOfController). The weaker one is the one that matters.
-        hub_hears = _rssi(d.get("ReceptionOfDevice"))
-        device_hears = _rssi(d.get("ReceptionOfController"))
-        readings = [r for r in (hub_hears, device_hears) if r is not None]
         product = d.get("ProductType") or ""
-        found.append(
-            {
-                "id": device_id,
-                "name": DEVICE_NAMES.get(product, product or "Device"),
-                "signal": _signal_percent(min(readings)) if readings else None,
-                "signal_label": _signal_label(d.get("DisplayedSignalStrength")),
-                "hub_hears_dbm": hub_hears,
-                "device_hears_dbm": device_hears,
-                "battery": _battery(d),
-            }
-        )
+        found.append(_device_info(device_id, d, DEVICE_NAMES.get(product, product or "Device")))
     # Number same-kind devices (Radiator valve 1, Radiator valve 2) so they can be told apart.
     for name in {d["name"] for d in found}:
         same = [d for d in found if d["name"] == name]
@@ -242,8 +245,10 @@ def _room_devices(r: dict[str, Any], devices: dict[Any, dict[str, Any]]) -> list
     return found
 
 
-def _link_parents(rooms: list[dict[str, Any]], devices: dict[Any, dict[str, Any]], domain: dict[str, Any]) -> None:
-    """Give each room device the device it's connected to. Zigbee is a mesh: a valve can reach
+def _link_parents(
+    rooms: list[dict[str, Any]], plugs: list[dict[str, Any]], devices: dict[Any, dict[str, Any]], domain: dict[str, Any]
+) -> None:
+    """Give each room device and smart plug the device it's connected to. Zigbee is a mesh: a valve can reach
     the hub through a repeater such as a smart plug. Each Device has its own NodeId and the
     ParentNodeId of the device it's connected to, as aioWiserHeatAPI reads them."""
     names: dict[Any, str] = {}
@@ -257,20 +262,49 @@ def _link_parents(rooms: list[dict[str, Any]], devices: dict[Any, dict[str, Any]
             label = name if "plug" in name.lower() else f"{name} smart plug" if name else "Smart plug"
             names.setdefault(plug.get("DeviceId", plug.get("id")), label)
     by_node = {d.get("NodeId"): device_id for device_id, d in devices.items() if d.get("NodeId") is not None}
-    for room in rooms:
-        for d in room["devices"]:
-            node = devices[d["id"]].get("ParentNodeId")
-            parent_id = by_node.get(node)
-            parent = devices.get(parent_id) or {}
-            if node is None:
-                d["parent"] = None
-            elif parent.get("ProductType") == "Controller" or (parent_id is None and node == 0):
-                d["parent"] = {"name": "the hub", "hub": True}
-            elif parent_id is not None:
-                product = parent.get("ProductType") or "Device"
-                d["parent"] = {"name": names.get(parent_id) or DEVICE_NAMES.get(product, product), "hub": False}
-            else:
-                d["parent"] = {"name": f"Zigbee node {node}", "hub": False}  # not in the Device list
+    for d in [d for room in rooms for d in room["devices"]] + [p["device"] for p in plugs]:
+        node = (devices.get(d["id"]) or {}).get("ParentNodeId")
+        parent_id = by_node.get(node)
+        parent = devices.get(parent_id) or {}
+        if node is None:
+            d["parent"] = None
+        elif parent.get("ProductType") == "Controller" or (parent_id is None and node == 0):
+            d["parent"] = {"name": "the hub", "hub": True}
+        elif parent_id is not None:
+            product = parent.get("ProductType") or "Device"
+            d["parent"] = {"name": names.get(parent_id) or DEVICE_NAMES.get(product, product), "hub": False}
+        else:
+            d["parent"] = {"name": f"Zigbee node {node}", "hub": False}  # not in the Device list
+
+
+def _plugs(domain: dict[str, Any], devices: dict[Any, dict[str, Any]], room_names: dict[Any, str]) -> list[dict[str, Any]]:
+    """Smart plugs, with the fields aioWiserHeatAPI reads from each SmartPlug entry."""
+    plugs = []
+    for p in domain.get("SmartPlug") or []:
+        if not isinstance(p, dict) or p.get("id") is None:
+            continue
+        device_id = p.get("DeviceId", p["id"])
+        power, energy = p.get("InstantaneousDemand"), p.get("CurrentSummationDelivered")
+        output, target = p.get("OutputState"), p.get("TargetState")
+        plugs.append(
+            {
+                "id": p["id"],
+                "name": (p.get("Name") or "").strip() or f"Smart plug {p['id']}",
+                "room": room_names.get(p.get("RoomId")),
+                "on": output == "On",
+                # TargetState leads OutputState while the plug is still switching.
+                "switching_to": (target == "On") if target in ("On", "Off") and target != output else None,
+                "mode": "manual" if p.get("Mode") == "Manual" else "auto",
+                "scheduled_on": {"On": True, "Off": False}.get(p.get("ScheduledState")),
+                "power_w": power if isinstance(power, (int, float)) else None,
+                "energy": energy if isinstance(energy, (int, float)) else None,
+                "away_off": p.get("AwayAction") == "Off",
+                # Signal and connection, the same as a room's devices (filled in by _link_parents).
+                # A plug is a Zigbee repeater (router): hubs report no single parent for it.
+                "device": {**_device_info(device_id, devices.get(device_id) or {}, "Smart plug"), "repeater": True},
+            }
+        )
+    return plugs
 
 
 def normalise(domain: dict[str, Any]) -> dict[str, Any]:
@@ -307,10 +341,12 @@ def normalise(domain: dict[str, Any]) -> dict[str, Any]:
                 "devices": _room_devices(r, devices),
             }
         )
-    _link_parents(rooms, devices, domain)
+    plugs = _plugs(domain, devices, {r["id"]: r["name"] for r in rooms})
+    _link_parents(rooms, plugs, devices, domain)
     channels = domain.get("HeatingChannel") or []
     return {
         "rooms": rooms,
+        "plugs": plugs,
         "system": {
             "away": system.get("OverrideType") == "Away",
             "away_temp": _deg(system.get("AwayModeSetPointLimit")),
@@ -343,6 +379,7 @@ class MockHub:
         5: [(16, "iTRV", -88, "Poor", 20)],
     }
     HUB_ID, PLUG_ID = 0, 20  # device ids; each device's Zigbee NodeId is its id + 1000 here
+    PLUG_SWITCH_SECONDS = 2.0  # how long the demo plug takes to switch
     # Device id -> (BatteryVoltage in tenths of a volt, BatteryLevel). The bedroom valve is running low.
     BATTERIES = {
         10: (26, "Normal"), 11: (30, "Normal"), 12: (29, "Normal"), 13: (28, "TwoThirds"),
@@ -359,9 +396,34 @@ class MockHub:
             i: {"Name": name, "temp": temp, "Mode": "Auto", "manual": 210, "ov": None}
             for i, (name, temp) in enumerate(start.items(), start=1)
         }
+        # The landing smart plug: a 35 W lamp, on a 17:00-23:00 schedule. "override" is a switch
+        # made in Auto mode, kept until the schedule next changes (scheduled state it was made in).
+        self.plug = {"Mode": "Auto", "manual": "Off", "AwayAction": "Off", "override": None, "wh": 2030.0, "pending": None}
 
     async def aclose(self) -> None:  # parity with WiserHub
         return None
+
+    @staticmethod
+    def _plug_scheduled() -> str:
+        return "On" if 17 <= time.localtime().tm_hour < 23 else "Off"
+
+    def _plug_output(self) -> tuple[str, str]:
+        """(OutputState, ControlSource) of the demo plug right now."""
+        p, scheduled = self.plug, self._plug_scheduled()
+        if p["pending"] and p["pending"][1] <= time.time():
+            if p["Mode"] == "Manual":
+                p["manual"] = p["pending"][0]
+            else:
+                p["override"] = (p["pending"][0], scheduled)
+            p["pending"] = None
+        if self.away and p["AwayAction"] == "Off":
+            return "Off", "FromAwayMode"
+        if p["Mode"] == "Manual":
+            return p["manual"], "FromManualMode"
+        if p["override"] and p["override"][1] == scheduled:
+            return p["override"][0], "FromManualOverride"
+        p["override"] = None
+        return scheduled, "FromSchedule"
 
     # -- simulation --------------------------------------------------------
     @staticmethod
@@ -407,6 +469,8 @@ class MockHub:
         now = time.time()
         minutes = (now - self._last) / 60
         self._last = now
+        if self._plug_output()[0] == "On":
+            self.plug["wh"] += 35 * minutes / 60  # the lamp's energy, in watt-hours
         for rid, r in self.rooms.items():
             target = self._effective(rid)[0] / 10
             if target > r["temp"]:
@@ -463,7 +527,8 @@ class MockHub:
             "Device": [
                 {"id": self.HUB_ID, "ProductType": "Controller", "NodeId": self.HUB_ID + 1000},
                 {"id": self.PLUG_ID, "ProductType": "SmartPlug", "NodeId": self.PLUG_ID + 1000,
-                 "ParentNodeId": self.HUB_ID + 1000, "DisplayedSignalStrength": "Good"},
+                 "ParentNodeId": self.HUB_ID + 1000, "DisplayedSignalStrength": "Online",
+                 "ReceptionOfDevice": {"Rssi": -74, "Lqi": 90}},
                 *(
                     {
                         "id": device_id,
@@ -480,8 +545,24 @@ class MockHub:
                     for device_id, product, rssi, rating, parent in devices
                 ),
             ],
-            "SmartPlug": [{"id": self.PLUG_ID, "Name": "Landing"}],
+            "SmartPlug": [self._plug_entry()],
             SCHEDULES_KEY: {"Heating": schedules},
+        }
+
+    def _plug_entry(self) -> dict[str, Any]:
+        output, source = self._plug_output()
+        return {
+            "id": self.PLUG_ID,
+            "Name": "Landing",
+            "Mode": self.plug["Mode"],
+            "ManualState": self.plug["manual"],
+            "ScheduledState": self._plug_scheduled(),
+            "AwayAction": self.plug["AwayAction"],
+            "OutputState": output,
+            "TargetState": self.plug["pending"][0] if self.plug["pending"] else output,
+            "ControlSource": source,
+            "InstantaneousDemand": 35 if output == "On" else 0,
+            "CurrentSummationDelivered": int(self.plug["wh"]),
         }
 
     # -- same interface as WiserHub ---------------------------------------
@@ -499,6 +580,16 @@ class MockHub:
             override = body.get("RequestOverride")
             if override is not None:
                 self.away = override.get("Type") == 2
+            return
+        if resource == f"SmartPlug/{self.PLUG_ID}":
+            p = self.plug
+            if body.get("Mode") in ("Auto", "Manual"):
+                p["Mode"], p["override"] = body["Mode"], None
+            if body.get("AwayAction") in ("Off", "NoChange"):
+                p["AwayAction"] = body["AwayAction"]
+            if body.get("RequestOutput") in ("On", "Off"):
+                # Like a real plug, it reports the new state only after a moment (TargetState shows it first).
+                p["pending"] = (body["RequestOutput"], now + self.PLUG_SWITCH_SECONDS)
             return
         if resource.startswith("Room/"):
             room = self.rooms.get(int(resource.split("/", 1)[1]))
