@@ -44,16 +44,24 @@ Press **Arrange rooms** at the bottom of the page and use the arrows to set the 
 
 The order lives in `settings.json` in the data folder. With Docker it's kept in the `wiser-data` volume, so it survives rebuilds and updates; `docker compose down -v` deletes it.
 
-## Publishing the image
+## The image
 
-The image holds only the app code. `.env` (your secret) and saved settings are excluded by `.dockerignore`, so it's safe to publish publicly. One image covers both Intel/AMD and ARM NASes:
+A ready-made image for Intel/AMD and ARM is published at **`ghcr.io/howwie/wiser-webui`**. GitHub Actions ([`.github/workflows/image.yml`](.github/workflows/image.yml)) runs the tests and, if they pass, builds and publishes it:
+
+| When | Tags |
+|---|---|
+| Every push to `main` | `latest`, and `sha-<commit>` to pin an exact build |
+| A version tag such as `v1.2.0` | `1.2.0` and `1.2` |
+
+To go back to an earlier build, use its `sha-…` or version tag instead of `latest` (tags are listed under the repository's **Packages**).
+
+The image holds only the app code. `.env` (your secret) and saved settings are excluded by `.dockerignore`.
+
+**Building your own** (for example from a fork), on any machine with Docker:
 
 ```bash
-docker login
-docker buildx build --platform linux/amd64,linux/arm64 -t <you>/wiser-webui:1.0.0 -t <you>/wiser-webui:latest --push .
+docker buildx build --platform linux/amd64,linux/arm64 -t <you>/wiser-webui:latest --push .
 ```
-
-Bump the version number for each release, so you can always go back to the one before.
 
 ## Running on a Synology NAS
 
@@ -65,7 +73,7 @@ Needs DSM 7.2 or later with **Container Manager** (Package Center).
    ```yaml
    services:
      wiser-webui:
-       image: <you>/wiser-webui:latest
+       image: ghcr.io/howwie/wiser-webui:latest
        container_name: wiser-webui
        env_file: .env
        ports:
@@ -94,7 +102,7 @@ The app normally runs as a limited user (ID 999) that can't write to folders DSM
    ```yaml
    services:
      wiser-webui:
-       image: <you>/wiser-webui:latest
+       image: ghcr.io/howwie/wiser-webui:latest
        container_name: wiser-webui
        user: "1026:100" # your uid:gid from step 1
        env_file: .env
@@ -111,7 +119,7 @@ To move an order you've already set from the named volume, just arrange the room
 
 **Opening it by a name:** if you use the NAS's name, a Tailscale name, or DSM's reverse proxy (Login Portal → Advanced → Reverse Proxy) with its own host name, add that name to `WISER_ALLOWED_HOSTS` in `.env`, then rebuild the project.
 
-**Updating:** publish a new image, then in Container Manager stop the project, open **Action → Build** to pull the new image and recreate the container, and start it. The room order is kept. If you prefer SSH:
+**Updating:** once a new image has been published (a few minutes after a push to `main`), in Container Manager stop the project, open **Action → Build** to pull the new image and recreate the container, and start it. The room order is kept. If you prefer SSH:
 
 ```bash
 cd /volume1/docker/wiser-webui && sudo docker compose pull && sudo docker compose up -d
