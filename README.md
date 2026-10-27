@@ -143,7 +143,7 @@ The Wiser local API isn't officially documented, so these come from community pr
 
 Newer hubs take writes under `/data/v2/domain`, older ones under `/data/domain`. The server tries v2 first and falls back automatically.
 
-Away and eco are checked after every change: if the hub accepts the command but the state doesn't change, the page says so instead of pretending it worked. Every failed write also shows the hub's own error message on the page and in `docker logs wiser-webui`, along with the request that was sent. If something doesn't work, send me that message (never the secret) and the fix is usually a one-line change in `app/main.py`.
+Away and eco are checked after every change: if the hub accepts the command but the state doesn't change, the page says so instead of pretending it worked. Every failed write also shows the hub's own error message on the page and in `docker logs wiser-webui`, along with the request that was sent. If something doesn't work on your hub, [open an issue](https://github.com/howwie/wiser-webui/issues) with that message (never include your secret); the fix is usually a one-line change in `app/main.py`.
 
 ## Troubleshooting
 
