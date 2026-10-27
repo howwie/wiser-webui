@@ -1,0 +1,14 @@
+services:
+  wiser-webui:
+    build: .
+    image: wiser-webui:latest
+    container_name: wiser-webui
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - wiser-data:/srv/data # saved settings (the room order), kept across rebuilds and updates
+    restart: unless-stopped
+
+volumes:
+  wiser-data:

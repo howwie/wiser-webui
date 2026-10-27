@@ -1,0 +1,14 @@
+# Private: the hub secret and saved settings must never end up in an image (it may be public).
+.env
+data
+
+# Not needed to run the app.
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+tests
+requirements-dev.txt
+pytest.ini
+README.md

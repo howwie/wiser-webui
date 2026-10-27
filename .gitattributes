@@ -1,0 +1,2 @@
+# Keep Unix line endings everywhere: these files are built into a Linux image.
+* text=auto eol=lf
