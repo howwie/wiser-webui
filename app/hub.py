@@ -366,6 +366,7 @@ class MockHub:
     SCHEDULES = {
         1: ([(630, 210), (900, 170), (1700, 210), (2200, 170)], [(800, 210), (2230, 170)]),
         2: ([(700, 160), (2100, 190)], [(900, 160), (2130, 190)]),  # bedroom: warm at night
+        3: ([(700, 200)], [(700, 200)]),  # study: the same temperature all the time
     }
 
     # Room id -> its devices as (device id, ProductType, RSSI, the hub's rating, parent device id).
@@ -428,7 +429,7 @@ class MockHub:
     # -- simulation --------------------------------------------------------
     @staticmethod
     def _schedule_id(rid: int) -> int:
-        return 2 if rid == 3 else 1  # room 3 is the bedroom
+        return {3: 2, 4: 3}.get(rid, 1)  # room 3 is the bedroom, room 4 the study
 
     def _points(self, sid: int, weekday: int) -> list[tuple[int, int]]:
         weekdays, weekends = self.SCHEDULES[sid]

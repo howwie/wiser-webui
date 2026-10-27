@@ -60,8 +60,12 @@ function statusLine(room) {
   }
   if (room.mode === "manual") return `Manual: holding ${deg(room.target)}`;
   const next = nextChange(room.schedule, room.scheduled);
-  if (!next) return `Following the schedule (${deg(room.target)})`;
-  return `On schedule until ${when(next)}, then ${next.temp == null ? "off" : deg(next.temp)}`;
+  if (next) return `On schedule until ${when(next)}, then ${next.temp == null ? "off" : deg(next.temp)}`;
+  // A schedule that never changes temperature (e.g. 12.5° at 07:00 every day): like the Wiser
+  // app, say when its next entry is, without a "then" that would repeat the same temperature.
+  const entry = nextChange(room.schedule);
+  if (entry) return `On schedule until ${when(entry)}`;
+  return `Following the schedule (${deg(room.target)})`;
 }
 
 const closeIcon = html`
@@ -284,7 +288,7 @@ function RoomCard({ room, system, actions }) {
         <p class="reading" data-missing=${!hasReading} aria-label=${hasReading ? `Currently ${deg(shown)}` : "No reading"}
           title=${hasReading ? `Measured ${deg(room.temp)}` : undefined}>${deg(shown)}</p>
         <div class="status-row">
-          <p class="status">${statusLine(room)}</p>
+          <p class="status" title=${statusLine(room)}>${statusLine(room)}</p>
           ${(room.boost || room.override) && html`
             <button class="icon-btn" disabled=${room.busy} onClick=${() => actions.boost(room, 0)}
               title=${room.boost ? "Cancel boost" : "Cancel hold"}
@@ -361,7 +365,7 @@ function PlugCard({ plug, actions }) {
       <div class="plug-main">
         <div>
           <p class="plug-state">${plug.on ? "On" : "Off"}</p>
-          <p class="status">${plugStatus(plug)}</p>
+          <p class="status" title=${plugStatus(plug)}>${plugStatus(plug)}</p>
         </div>
         <button class="switch" role="switch" aria-checked=${target} aria-label=${`${plug.name} power`}
           data-pending=${plug.switching_to != null} onClick=${() => actions.plugPower(plug, !target)}></button>

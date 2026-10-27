@@ -160,9 +160,11 @@ h1 { margin: 0; font-size: 1.75rem; font-weight: 650; letter-spacing: -0.02em; }
   margin: 0;
 }
 .reading[data-missing="true"] { color: var(--muted); }
-/* Always as tall as the cancel button, so a card doesn't grow when a boost or hold starts. */
-.status-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-height: 32px; }
+/* A fixed two lines tall, whether the text takes one line or two (or a cancel button shows), so
+   the bars below line up across cards. Anything longer is cut off; the full text is its tooltip. */
+.status-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; height: 2.9em; height: 2lh; }
 .status { margin: 0; color: var(--muted); text-wrap: pretty; }
+.status-row .status, .plug .status { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .icon-btn {
   flex: none;
   width: 32px;
@@ -184,7 +186,8 @@ h1 { margin: 0; font-size: 1.75rem; font-weight: 650; letter-spacing: -0.02em; }
 .plug-room { margin: 2px 0 0; color: var(--muted); font-size: 0.85rem; }
 .plug-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .plug-state { margin: 0; font-size: 2.25rem; font-weight: 300; line-height: 1.1; }
-.plug .status { margin: 4px 0 0; }
+/* Two lines tall whatever it says, so switching the plug doesn't change the card's height. */
+.plug .status { margin: 4px 0 0; height: 2.9em; height: 2lh; }
 .plug-meter { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 0.9rem; }
 .plug-meter strong { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
 .pill[data-kind="on"] { background: var(--heat-soft); color: var(--heat-ink); font-weight: 600; }
