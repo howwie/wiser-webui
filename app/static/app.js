@@ -205,9 +205,22 @@ function ArrangeList({ rooms, onMove, onDone }) {
   `;
 }
 
+// Whether this device stays live while nobody touches it (see App). Saved per device; opening the
+// page as /?keep-live turns it on, for kiosk apps that make the setting awkward to reach.
+const KEEP_LIVE_KEY = "wiser.keepLive";
+function initialKeepLive() {
+  try {
+    if (new URLSearchParams(location.search).has("keep-live")) localStorage.setItem(KEEP_LIVE_KEY, "1");
+    return localStorage.getItem(KEEP_LIVE_KEY) === "1";
+  } catch {
+    return new URLSearchParams(location.search).has("keep-live");
+  }
+}
+
 function App() {
   const [data, setData] = useState(null);
   const [live, setLive] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [local, setLocal] = useState({}); // optimistic values by room id (and "sys")
   const [toast, setToast] = useState(null);
   const [boostRoomId, setBoostRoomId] = useState(null);
@@ -217,6 +230,18 @@ function App() {
   const seqs = useRef({});
   const timers = useRef({});
   const toastTimer = useRef(null);
+  const [keepLive, setKeepLive] = useState(initialKeepLive);
+  const keepLiveRef = useRef(keepLive);
+  const wakeRef = useRef(null);
+
+  const changeKeepLive = (on) => {
+    setKeepLive(on);
+    keepLiveRef.current = on;
+    try {
+      on ? localStorage.setItem(KEEP_LIVE_KEY, "1") : localStorage.removeItem(KEEP_LIVE_KEY);
+    } catch {}
+    wakeRef.current?.();
+  };
 
   const showToast = (message) => {
     setToast(message);
@@ -225,22 +250,36 @@ function App() {
   };
 
   // Live updates: server-sent events, with a slow poll as a safety net. The server only reads the
-  // hub while a page is connected, so a hidden tab (background tab, phone in a pocket, tablet with
-  // its screen off) disconnects after a short while and reconnects when it's shown again.
+  // hub while a page is connected, so the page lets go when nobody is looking:
+  // - a hidden tab (background tab, minimised window, phone in a pocket) after 30 seconds;
+  // - a page nobody has touched for IDLE_MS. Browsers count a tab as visible whenever it's the
+  //   front tab of a window that isn't minimised, even behind other windows or on a locked or
+  //   switched-off screen, so visibility alone would keep a forgotten desktop tab live all night.
+  //   "Keep live on this device" turns this off for wall tablets and other always-on displays.
+  // Moving the mouse over the page, a tap, a key or showing the tab again reconnects and refreshes.
   useEffect(() => {
+    const IDLE_MS = 15 * 60000;
     const visible = () => document.visibilityState === "visible";
     const load = () => fetch("/api/state").then((r) => r.json()).then(setData).catch(() => {});
     let source = null;
     let retry;
     let hideTimer;
+    let lastActive = Date.now();
+    const idle = () => !keepLiveRef.current && Date.now() - lastActive >= IDLE_MS;
     const connect = () => {
+      setPaused(false);
       source = new EventSource("/api/events");
       source.onmessage = (event) => { setData(JSON.parse(event.data)); setLive(true); };
       // The browser reconnects by itself after a dropped connection (e.g. a server restart), but
       // gives up for good if a reconnect gets an error page back, so then we start a fresh one.
       source.onerror = () => {
         setLive(false);
-        if (source.readyState === EventSource.CLOSED) retry = setTimeout(() => visible() && connect(), 5000);
+        if (source.readyState === EventSource.CLOSED) {
+          retry = setTimeout(() => {
+            source = null; // lets a later wake() reconnect if this one doesn't
+            if (visible() && !idle()) connect();
+          }, 5000);
+        }
       };
     };
     const disconnect = () => {
@@ -248,25 +287,36 @@ function App() {
       source?.close();
       source = null;
       setLive(false);
+      setPaused(true);
     };
+    const wake = () => {
+      lastActive = Date.now();
+      if (visible() && !source) {
+        load();
+        connect();
+      }
+    };
+    wakeRef.current = wake;
     const onVisibility = () => {
       clearTimeout(hideTimer);
-      if (visible()) {
-        load();
-        if (!source) connect();
-      } else {
-        // A grace period, so a quick look at another app doesn't drop and remake the connection.
-        hideTimer = setTimeout(disconnect, 30000);
-      }
+      if (visible()) wake();
+      // A grace period, so a quick look at another app doesn't drop and remake the connection.
+      else hideTimer = setTimeout(disconnect, 30000);
     };
     load();
     if (visible()) connect();
-    const poll = setInterval(() => visible() && load(), 60000);
+    const poll = setInterval(() => {
+      if (idle()) source && disconnect();
+      else if (visible()) load();
+    }, 60000);
+    const activity = ["pointermove", "pointerdown", "keydown", "wheel", "focus"];
+    activity.forEach((type) => window.addEventListener(type, wake, { passive: true }));
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       disconnect();
       clearTimeout(hideTimer);
       clearInterval(poll);
+      activity.forEach((type) => window.removeEventListener(type, wake));
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
@@ -390,11 +440,17 @@ function App() {
       <div class="foot">
         <p>
           ${data.updated ? `Hub last read at ${clock(data.updated)}.` : ""}
-          ${live ? "" : " Reconnecting for live updates…"}
+          ${live ? "" : paused ? " Live updates paused while the page is idle. Move the mouse or tap to resume." : " Reconnecting for live updates…"}
         </p>
-        ${rooms.length > 1 && !arranging && html`
-          <button class="btn" data-kind="quiet" onClick=${() => setArranging(true)}>Arrange rooms</button>
-        `}
+        <div class="foot-actions">
+          <label class="check" title="For a wall tablet or other always-on screen: stay live even when nobody touches it. Turning the screen off still pauses it.">
+            <input type="checkbox" checked=${keepLive} onChange=${(e) => changeKeepLive(e.currentTarget.checked)} />
+            Keep live on this device
+          </label>
+          ${rooms.length > 1 && !arranging && html`
+            <button class="btn" data-kind="quiet" onClick=${() => setArranging(true)}>Arrange rooms</button>
+          `}
+        </div>
       </div>
       <p class="sr-only" aria-live="polite">${announcement}</p>
     </main>

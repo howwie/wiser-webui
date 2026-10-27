@@ -33,7 +33,7 @@ Open `http://<nas-address>:8080`. You'll see five demo rooms and a banner saying
 | `WISER_SECRET` | The hub's secret |
 | `WISER_UI_PASSWORD` | Optional. Asks for this password in the browser (any username) |
 | `WISER_ALLOWED_HOSTS` | Optional. Comma-separated host names you open the page by, such as `nas.lan,heating.local`. Addresses like `192.168.1.20` and `localhost` always work |
-| `WISER_POLL_SECONDS` | How often the hub is read while a page is open. Default 20, minimum 5. With no page open the hub isn't polled; `GET /api/state` then reads it on demand |
+| `WISER_POLL_SECONDS` | How often the hub is read while a page is open. Default 20, minimum 5. With no page open the hub isn't polled; `GET /api/state` then reads it on demand. A page lets go 30 seconds after its tab is hidden, or after 15 minutes with no mouse, touch or key use, and picks up again when you come back. For a wall tablet, tick **Keep live on this device** at the bottom of the page (or open it as `/?keep-live`) |
 | `WISER_BOOST_INCREASE` | Degrees a boost adds. Default 2 |
 | `WISER_MOCK` | `1` runs demo data with no hub |
 | `WISER_DATA_DIR` | Where saved settings (the room order) go. Default `data` next to where you start the server; the Docker image uses `/srv/data`, kept in the `wiser-data` volume |

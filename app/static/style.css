@@ -277,6 +277,9 @@ h1 { margin: 0; font-size: 1.75rem; font-weight: 650; letter-spacing: -0.02em; }
   gap: 8px 16px;
 }
 .foot p { margin: 0; }
+.foot-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.check { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; }
+.check input { width: 18px; height: 18px; margin: 0; accent-color: var(--cool); }
 
 .sr-only {
   position: absolute;
