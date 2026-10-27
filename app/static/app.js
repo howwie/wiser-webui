@@ -163,11 +163,77 @@ function HoldDialog({ rooms, onApply, onClose }) {
   `;
 }
 
+// Signal as 0-4 bars, one per step of the hub's own rating (it's what the Wiser app shows).
+// Only "Very good" and "Good" have been seen on a real hub; the weaker three are from memory.
+// A device whose rating isn't one of these gets its bars from its radio reading instead.
+const RATINGS = ["no signal", "poor", "medium", "good", "very good"]; // weakest first, index = bars
+function signalBars(device) {
+  const rated = RATINGS.indexOf(device.signal_label?.toLowerCase());
+  if (rated >= 0) return rated;
+  const s = device.signal;
+  if (s == null) return null;
+  return s >= 75 ? 4 : s >= 50 ? 3 : s >= 30 ? 2 : s > 0 ? 1 : 0;
+}
+const signalScore = signalBars; // what picks a room's weakest device
+const signalText = (device) =>
+  device.signal_label ?? (device.signal != null ? `${device.signal}%` : "Unknown");
+
+// Received power in each direction, e.g. "Hub hears −71 · it hears −69 dBm". Closer to 0 is stronger.
+const minus = (v) => String(v).replace("-", "−");
+function signalPower(device) {
+  const parts = [];
+  if (device.hub_hears_dbm != null) parts.push(`Hub hears ${minus(device.hub_hears_dbm)}`);
+  if (device.device_hears_dbm != null) parts.push(`${parts.length ? "it" : "It"} hears ${minus(device.device_hears_dbm)}`);
+  return parts.length ? `${parts.join(" · ")} dBm` : "";
+}
+
+const barsIcon = (bars) => html`
+  <svg class="bars" viewBox="0 0 20 16" width="20" height="16" aria-hidden="true">
+    ${[0, 1, 2, 3].map((i) => html`
+      <rect key=${i} x=${i * 5 + 1} y=${12 - i * 3.5} width="3" height=${4 + i * 3.5} rx="1"
+        fill="currentColor" opacity=${i < bars ? 1 : 0.25} />
+    `)}
+  </svg>
+`;
+
+function SignalDialog({ room, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => { ref.current.showModal(); }, []);
+  const close = () => ref.current.close();
+  return html`
+    <dialog ref=${ref} class="dialog" aria-labelledby="signal-title" onClose=${onClose}
+      onClick=${(e) => e.target === ref.current && close()}>
+      <div class="dialog-body">
+        <h2 id="signal-title">${room.name} signal</h2>
+        <p class="hint">How well each device and the hub hear each other, as received power: closer to 0 dBm is stronger.</p>
+        <ul class="signal-list">
+          ${room.devices.map((d) => html`
+            <li key=${d.id} data-weak=${signalBars(d) != null && signalBars(d) <= 1}>
+              <span class="signal-name">
+                ${d.name}
+                ${signalPower(d) && html`<span class="signal-power">${signalPower(d)}</span>`}
+              </span>
+              ${signalBars(d) != null && barsIcon(signalBars(d))}
+              <span class="signal-text">${signalText(d)}</span>
+            </li>
+          `)}
+        </ul>
+        <div class="dialog-foot">
+          <button class="btn" data-kind="quiet" onClick=${close}>Close</button>
+        </div>
+      </div>
+    </dialog>
+  `;
+}
+
 function RoomCard({ room, system, actions }) {
   const heating = room.demand > 0;
   const target = room.target;
   const hasReading = room.temp != null;
   const shown = halfDeg(room.temp);
+  // The weakest device sets the room's icon: one bad valve is what you'd want to know about.
+  const rated = (room.devices || []).filter((d) => signalScore(d) != null);
+  const weakest = rated.length ? rated.reduce((a, b) => (signalScore(b) < signalScore(a) ? b : a)) : null;
 
   return html`
     <article class="card" data-heating=${heating}>
@@ -176,6 +242,14 @@ function RoomCard({ room, system, actions }) {
         <div class="pills">
           ${room.window_open && html`<span class="pill">Window open</span>`}
           ${heating && html`<span class="pill" data-kind="heat">Heating</span>`}
+          ${weakest && html`
+            <button class="icon-btn signal-btn" data-weak=${signalBars(weakest) <= 1}
+              onClick=${() => actions.openSignal(room)}
+              title=${`Signal: ${signalText(weakest)}${rated.length > 1 ? ` (weakest of ${room.devices.length} devices)` : ""}`}
+              aria-label=${`${room.name} signal: ${signalText(weakest)}${rated.length > 1 ? `, weakest of ${room.devices.length} devices` : ""}. Show devices`}>
+              ${barsIcon(signalBars(weakest))}
+            </button>
+          `}
         </div>
       </div>
 
@@ -279,6 +353,7 @@ function App() {
   const [toast, setToast] = useState(null);
   const [boostRoomId, setBoostRoomId] = useState(null);
   const [holding, setHolding] = useState(false); // the "Boost rooms" dialog is open
+  const [signalRoomId, setSignalRoomId] = useState(null);
   const [, setMinute] = useState(0);
   const [arranging, setArranging] = useState(false);
   const [announcement, setAnnouncement] = useState("");
@@ -417,6 +492,9 @@ function App() {
     openBoost(room) {
       setBoostRoomId(room.id);
     },
+    openSignal(room) {
+      setSignalRoomId(room.id);
+    },
     boost(room, minutes) {
       const seq = mutate(room.id, { busy: true });
       send(room.id, seq, `/api/rooms/${room.id}/boost`, { minutes });
@@ -470,6 +548,7 @@ function App() {
     rooms = [...rooms].sort((a, b) => (rank.get(a.id) ?? rank.size) - (rank.get(b.id) ?? rank.size));
   }
   const boostRoom = rooms.find((r) => r.id === boostRoomId);
+  const signalRoom = rooms.find((r) => r.id === signalRoomId);
 
   return html`
     <main>
@@ -527,6 +606,7 @@ function App() {
       <p class="sr-only" aria-live="polite">${announcement}</p>
     </main>
     ${boostRoom && html`<${BoostDialog} room=${boostRoom} onPick=${actions.boost} onClose=${() => setBoostRoomId(null)} />`}
+    ${signalRoom && html`<${SignalDialog} room=${signalRoom} onClose=${() => setSignalRoomId(null)} />`}
     ${holding && html`<${HoldDialog} rooms=${rooms} onApply=${actions.hold} onClose=${() => setHolding(false)} />`}
     ${toast &&html`<div class="toast" role="status">${toast}</div>`}
   `;

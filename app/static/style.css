@@ -179,6 +179,18 @@ h1 { margin: 0; font-size: 1.75rem; font-weight: 650; letter-spacing: -0.02em; }
 /* A bigger invisible hit area for fingers, without changing the layout. */
 .icon-btn::before { content: ""; position: absolute; inset: -6px; }
 
+/* Signal: quiet unless a device is weak. */
+.pills { align-items: center; }
+.signal-btn { width: 28px; height: 28px; margin: -4px -4px -4px 0; border-color: transparent; background: transparent; color: var(--muted); }
+.signal-btn:hover { background: var(--ground); }
+.signal-btn[data-weak="true"], .signal-list li[data-weak="true"] { color: var(--danger); }
+.signal-list { list-style: none; margin: 0; padding: 0; }
+.signal-list li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 0; border-top: 1px solid var(--line); }
+.signal-power { display: block; color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.signal-list li:first-child { border-top: 0; }
+.signal-name { flex: 1; color: var(--ink); }
+.signal-text { min-width: 6ch; text-align: right; font-variant-numeric: tabular-nums; }
+
 .track {
   position: relative;
   height: 10px;

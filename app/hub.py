@@ -155,9 +155,71 @@ def _heating_schedules(domain: dict[str, Any]) -> dict[Any, dict[str, Any]]:
     return schedules
 
 
+DEVICE_NAMES = {
+    "iTRV": "Radiator valve",
+    "RoomStat": "Room thermostat",
+    "HeatingActuator": "Heating actuator",
+    "UnderFloorHeating": "Underfloor heating",
+}
+
+
+def _rssi(reception: Any) -> int | None:
+    """A {"Rssi": -71, "Lqi": 120} reading -> the RSSI in dBm (0 or missing means no reading)."""
+    rssi = reception.get("Rssi") if isinstance(reception, dict) else None
+    return int(rssi) if isinstance(rssi, (int, float)) and rssi != 0 else None
+
+
+def _signal_percent(rssi: int | None) -> int | None:
+    """RSSI in dBm -> 0-100, as aioWiserHeatAPI works it out: 2 x (RSSI + 100), at most 100."""
+    return None if rssi is None else max(0, min(100, int(2 * (rssi + 100))))
+
+
+def _signal_label(text: Any) -> str | None:
+    """The hub's own rating, e.g. "VeryGood" -> "Very good"."""
+    if not isinstance(text, str) or not text or text == "Unknown":
+        return None
+    words = "".join(f" {c}" if c.isupper() else c for c in text).split()
+    return " ".join(words).capitalize()
+
+
+def _room_devices(r: dict[str, Any], devices: dict[Any, dict[str, Any]]) -> list[dict[str, Any]]:
+    """The room's valves and thermostat, with each one's signal. Rooms list their devices' ids
+    (as aioWiserHeatAPI matches them); the readings are in the domain's Device list."""
+    ids = [r.get("RoomStatId"), *(r.get("SmartValveIds") or []), *(r.get("HeatingActuatorIds") or []), r.get("UnderFloorHeatingId")]
+    found = []
+    for device_id in dict.fromkeys(i for i in ids if i is not None):
+        d = devices.get(device_id)
+        if not d:
+            continue
+        # Each direction has its own reading: the hub hearing the device (ReceptionOfDevice) and the
+        # device hearing the hub (ReceptionOfController). The weaker one is the one that matters.
+        hub_hears = _rssi(d.get("ReceptionOfDevice"))
+        device_hears = _rssi(d.get("ReceptionOfController"))
+        readings = [r for r in (hub_hears, device_hears) if r is not None]
+        product = d.get("ProductType") or ""
+        found.append(
+            {
+                "id": device_id,
+                "name": DEVICE_NAMES.get(product, product or "Device"),
+                "signal": _signal_percent(min(readings)) if readings else None,
+                "signal_label": _signal_label(d.get("DisplayedSignalStrength")),
+                "hub_hears_dbm": hub_hears,
+                "device_hears_dbm": device_hears,
+            }
+        )
+    # Number same-kind devices (Radiator valve 1, Radiator valve 2) so they can be told apart.
+    for name in {d["name"] for d in found}:
+        same = [d for d in found if d["name"] == name]
+        if len(same) > 1:
+            for n, d in enumerate(same, start=1):
+                d["name"] = f"{name} {n}"
+    return found
+
+
 def normalise(domain: dict[str, Any]) -> dict[str, Any]:
     system = domain.get("System") or {}
     schedules = _heating_schedules(domain)
+    devices = {d.get("id"): d for d in domain.get("Device") or [] if isinstance(d, dict)}
     rooms = []
     for r in domain.get("Room") or []:
         # Both spellings occur; aioWiserHeatAPI checks both too, and counts any origin
@@ -185,6 +247,7 @@ def normalise(domain: dict[str, Any]) -> dict[str, Any]:
                 # Times are the hub's local time, so the browser (in the same home) works out
                 # "until when" itself rather than this server, whose clock may be on UTC.
                 "schedule": _schedule_days(schedule) if schedule else None,
+                "devices": _room_devices(r, devices),
             }
         )
     channels = domain.get("HeatingChannel") or []
@@ -209,6 +272,16 @@ class MockHub:
     SCHEDULES = {
         1: ([(630, 210), (900, 170), (1700, 210), (2200, 170)], [(800, 210), (2230, 170)]),
         2: ([(700, 160), (2100, 190)], [(900, 160), (2130, 190)]),  # bedroom: warm at night
+    }
+
+    # Room id -> its devices as (device id, ProductType, RSSI, the hub's rating). The bathroom
+    # valve is a weak one, as you'd see with a valve behind a radiator at the far end of the house.
+    DEVICES = {
+        1: [(10, "RoomStat", -58, "VeryGood"), (11, "iTRV", -64, "Good"), (12, "iTRV", -71, "Good")],
+        2: [(13, "iTRV", -66, "Good")],
+        3: [(14, "iTRV", -77, "Medium")],
+        4: [(15, "iTRV", -61, "VeryGood")],
+        5: [(16, "iTRV", -88, "Poor")],
     }
 
     def __init__(self) -> None:
@@ -283,10 +356,13 @@ class MockHub:
             demand = int(max(0, min(100, (sp / 10 - r["temp"]) * 50)))
             heating = heating or demand > 0
             ov = r["ov"]
+            devices = self.DEVICES.get(rid, [])
             rooms.append(
                 {
                     "id": rid,
                     "Name": r["Name"],
+                    "RoomStatId": next((d[0] for d in devices if d[1] == "RoomStat"), None),
+                    "SmartValveIds": [d[0] for d in devices if d[1] == "iTRV"],
                     "Mode": r["Mode"],
                     "OverrideType": ov["type"] if ov else "None",
                     "OverrideTimeoutUnixTime": int(ov["until"]) if ov else 0,
@@ -319,6 +395,17 @@ class MockHub:
             },
             "HeatingChannel": [{"id": 1, "HeatingRelayState": "On" if heating else "Off"}],
             "Room": rooms,
+            "Device": [
+                {
+                    "id": device_id,
+                    "ProductType": product,
+                    "DisplayedSignalStrength": rating,
+                    "ReceptionOfController": {"Rssi": rssi, "Lqi": 120},
+                    "ReceptionOfDevice": {"Rssi": rssi - 2, "Lqi": 120},
+                }
+                for devices in self.DEVICES.values()
+                for device_id, product, rssi, rating in devices
+            ],
             SCHEDULES_KEY: {"Heating": schedules},
         }
 

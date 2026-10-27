@@ -97,6 +97,31 @@ def test_real_hub_read_survives_a_missing_schedules_endpoint():
     assert out["rooms"][0]["schedule"] is None
 
 
+def test_room_devices_and_their_signal():
+    raw = room(RoomStatId=10, SmartValveIds=[11, 12, 99])  # 99 isn't in the Device list
+    devices = [
+        {"id": 10, "ProductType": "RoomStat", "DisplayedSignalStrength": "VeryGood", "ReceptionOfController": {"Rssi": -55}},
+        # The weaker direction counts: -80 -> 40%.
+        {"id": 11, "ProductType": "iTRV", "DisplayedSignalStrength": "Medium",
+         "ReceptionOfController": {"Rssi": -70}, "ReceptionOfDevice": {"Rssi": -80}},
+        {"id": 12, "ProductType": "iTRV", "DisplayedSignalStrength": "NoSignal"},
+        {"id": 13, "ProductType": "iTRV", "ReceptionOfController": {"Rssi": -60}},  # another room's
+    ]
+    out = normalise({"Room": [raw], "Device": devices})["rooms"][0]["devices"]
+    assert out == [
+        {"id": 10, "name": "Room thermostat", "signal": 90, "signal_label": "Very good",
+         "hub_hears_dbm": None, "device_hears_dbm": -55},
+        {"id": 11, "name": "Radiator valve 1", "signal": 40, "signal_label": "Medium",
+         "hub_hears_dbm": -80, "device_hears_dbm": -70},
+        {"id": 12, "name": "Radiator valve 2", "signal": None, "signal_label": "No signal",
+         "hub_hears_dbm": None, "device_hears_dbm": None},
+    ]
+
+
+def test_room_without_devices():
+    assert only_room()["devices"] == []
+
+
 def test_manual_override_keeps_its_end_time():
     r = only_room(SetpointOrigin="FromManualOverride", OverrideType="Manual", OverrideTimeoutUnixTime=1_700_000_000)
     assert r["override"] is True
