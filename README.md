@@ -4,7 +4,7 @@ A small web app to control a Drayton Wiser heating system from any browser, with
 One Python container reads your Wiser Heat Hub over your home network and serves both the page and a JSON API.
 Your hub secret stays on the server and never reaches the browser.
 
-**What you can do:** see every room's temperature, change its target, switch it between schedule and manual, boost it for 30 minutes to 3 hours, boost several rooms at once to the same temperature (which the Wiser app can't do), check the signal of each room's valves and thermostat, and turn away mode and eco mode on or off. The page updates itself, including when someone changes something in the Wiser app.
+**What you can do:** see every room's temperature, change its target, switch it between schedule and manual, boost it for 30 minutes to 3 hours, boost several rooms at once to the same temperature (which the Wiser app can't do), check the signal and battery of each room's valves and thermostat, and turn away mode and eco mode on or off. The page updates itself, including when someone changes something in the Wiser app.
 
 ## Try it first (no hub needed)
 
@@ -51,6 +51,12 @@ The bars at the top of each room card show the signal of the room's **weakest** 
 The list also shows what each device is connected to. Wiser devices use Zigbee, a mesh network, so a valve far from the hub can reach it through another device, such as a smart plug or a room thermostat: "Connected through Landing smart plug". For a device connected that way, the dBm readings are shown without saying who hears whom, as it isn't known whether they're of that link or of the hub.
 
 The bars follow the hub's own rating, as in the Wiser app: 4 for "Very good", 3 for "Good". Those two have been seen on a real hub. The weaker ratings are expected to be "Medium" (2), "Poor" (1) and "No signal" (0), but those names are from memory, not confirmed. A device whose rating isn't one of these shows the hub's word as it is, and gets its bars from its radio reading instead: 4 from −62 dBm, 3 from −75, 2 from −85, 1 below that. A valve with a poor signal can miss commands; moving the hub, or adding a Wiser smart plug between them as a repeater, usually helps.
+
+## Batteries
+
+The device list also shows each battery-powered device's battery: "Battery 80% · 2.9 V". A room card shows **Low battery** when any of its devices is at 20% or less (or the hub calls its battery low); tap it to see which. Mains-powered devices, such as smart plugs, have no battery line.
+
+The percentage is worked out from the voltage the way aioWiserHeatAPI does it: room thermostats run from 1.7 V (empty) to 2.7 V (full); radiator valves use a table from 3.0 V (100%) down to 2.3 V (0%). A device that reports no voltage uses the hub's level instead: Normal 100%, Two thirds 66%, One third 33%, Low 10%.
 
 ## Arranging rooms
 
@@ -156,6 +162,7 @@ The Wiser local API isn't officially documented. Every call below has been check
 | Read everything | `GET /data/domain/` with `SECRET` header | `get_hub_data` (it uses `/data/v2/domain/`; both work) |
 | Room schedules ("until 22:00") | `GET /data/v2/schedules/`: `{"Heating": [...]}`, matched to rooms by `ScheduleId`; each day is `{"Time": [630, …], "DegreesC": [210, …]}`. If it fails, rooms just say "Following the schedule" | Schedule collection |
 | Device signal | From the same reply: rooms list their devices (`RoomStatId`, `SmartValveIds`, `HeatingActuatorIds`, `UnderFloorHeatingId`), and each `Device` has `DisplayedSignalStrength` and `ReceptionOfController`/`ReceptionOfDevice` → `Rssi` (strength = 2 × (RSSI + 100), at most 100) | Device collection and signal helper |
+| Device battery | Each `Device`'s `BatteryVoltage` (tenths of a volt) and `BatteryLevel` (`Normal`, `TwoThirds`, `OneThird`, `Low`) | Battery helper |
 | What a device is connected to | Each `Device`'s `ParentNodeId` is the `NodeId` of the device it's connected to; the hub is the `Controller` | `device.parent_node_id` and `devices.get_by_node_id` |
 | Boost a room | `PATCH /data/v2/domain/Room/{id}` `{"RequestOverride":{"Type":"Boost","DurationMinutes":30,"IncreaseSetPointBy":20}}` (the hub adds this to the room's current temperature) | `room.boost` |
 | Set a target | `PATCH …/Room/{id}` `{"RequestOverride":{"Type":"Manual","SetPoint":215}}` (tenths of a degree) | `room.set_target_temperature` |

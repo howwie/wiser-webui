@@ -182,6 +182,31 @@ def _signal_label(text: Any) -> str | None:
     return " ".join(words).capitalize()
 
 
+# Battery, as aioWiserHeatAPI 1.7.7 works it out (helpers/battery.py and const.py).
+ROOMSTAT_BATTERY_VOLTS = (1.7, 2.7)  # empty, full
+TRV_BATTERY_PERCENT = {3.0: 100, 2.9: 80, 2.8: 60, 2.7: 40, 2.6: 20, 2.5: 10, 2.4: 5, 2.3: 0}
+BATTERY_LEVEL_PERCENT = {"normal": 100, "twothirds": 66, "onethird": 33, "low": 10}
+
+
+def _battery(d: dict[str, Any]) -> dict[str, Any] | None:
+    """{"percent", "level", "volts"} for a battery device; None for one with no battery data
+    (mains powered, like a smart plug or heating actuator)."""
+    raw_volts, level = d.get("BatteryVoltage"), d.get("BatteryLevel")
+    volts = round(raw_volts / 10, 1) if isinstance(raw_volts, (int, float)) and raw_volts > 0 else None
+    level = level if isinstance(level, str) and level and level != "Unknown" else None
+    if volts is None and level is None:
+        return None
+    product = d.get("ProductType")
+    if volts is not None and product == "RoomStat":
+        empty, full = ROOMSTAT_BATTERY_VOLTS
+        percent = max(0, min(100, round((volts - empty) / (full - empty) * 100)))
+    elif volts is not None and product == "iTRV":
+        percent = 100 if volts >= 3.0 else TRV_BATTERY_PERCENT.get(volts, 0)
+    else:
+        percent = BATTERY_LEVEL_PERCENT.get((level or "").lower())
+    return {"percent": percent, "level": _signal_label(level), "volts": volts}
+
+
 def _room_devices(r: dict[str, Any], devices: dict[Any, dict[str, Any]]) -> list[dict[str, Any]]:
     """The room's valves and thermostat, with each one's signal. Rooms list their devices' ids
     (as aioWiserHeatAPI matches them); the readings are in the domain's Device list."""
@@ -205,6 +230,7 @@ def _room_devices(r: dict[str, Any], devices: dict[Any, dict[str, Any]]) -> list
                 "signal_label": _signal_label(d.get("DisplayedSignalStrength")),
                 "hub_hears_dbm": hub_hears,
                 "device_hears_dbm": device_hears,
+                "battery": _battery(d),
             }
         )
     # Number same-kind devices (Radiator valve 1, Radiator valve 2) so they can be told apart.
@@ -226,8 +252,10 @@ def _link_parents(rooms: list[dict[str, Any]], devices: dict[Any, dict[str, Any]
             names[d["id"]] = f"{d['name']} in {room['name']}"  # e.g. "Radiator valve 2 in Living room"
     for plug in domain.get("SmartPlug") or []:
         if isinstance(plug, dict):
-            name = plug.get("Name")
-            names.setdefault(plug.get("DeviceId", plug.get("id")), f"{name} smart plug" if name else "Smart plug")
+            name = (plug.get("Name") or "").strip()
+            # "Landing" -> "Landing smart plug", but "Master bedroom plug" stays as it is.
+            label = name if "plug" in name.lower() else f"{name} smart plug" if name else "Smart plug"
+            names.setdefault(plug.get("DeviceId", plug.get("id")), label)
     by_node = {d.get("NodeId"): device_id for device_id, d in devices.items() if d.get("NodeId") is not None}
     for room in rooms:
         for d in room["devices"]:
@@ -262,7 +290,7 @@ def normalise(domain: dict[str, Any]) -> dict[str, Any]:
         rooms.append(
             {
                 "id": r["id"],
-                "name": r.get("Name") or f"Room {r['id']}",
+                "name": (r.get("Name") or "").strip() or f"Room {r['id']}",
                 "temp": _deg(r.get("CalculatedTemperature")),
                 "target": _deg(r.get("DisplayedSetPoint", r.get("CurrentSetPoint"))),
                 "scheduled": _deg(r.get("ScheduledSetPoint")),
@@ -315,6 +343,11 @@ class MockHub:
         5: [(16, "iTRV", -88, "Poor", 20)],
     }
     HUB_ID, PLUG_ID = 0, 20  # device ids; each device's Zigbee NodeId is its id + 1000 here
+    # Device id -> (BatteryVoltage in tenths of a volt, BatteryLevel). The bedroom valve is running low.
+    BATTERIES = {
+        10: (26, "Normal"), 11: (30, "Normal"), 12: (29, "Normal"), 13: (28, "TwoThirds"),
+        14: (25, "Low"), 15: (30, "Normal"), 16: (27, "OneThird"),
+    }
 
     def __init__(self) -> None:
         self._last = time.time()
@@ -440,6 +473,8 @@ class MockHub:
                         "DisplayedSignalStrength": rating,
                         "ReceptionOfController": {"Rssi": rssi, "Lqi": 120},
                         "ReceptionOfDevice": {"Rssi": rssi - 2, "Lqi": 120},
+                        "BatteryVoltage": self.BATTERIES[device_id][0],
+                        "BatteryLevel": self.BATTERIES[device_id][1],
                     }
                     for devices in self.DEVICES.values()
                     for device_id, product, rssi, rating, parent in devices

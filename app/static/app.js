@@ -191,6 +191,15 @@ function signalPower(device) {
   if (values[1] != null) parts.push(`${parts.length ? "it" : "It"} hears ${minus(values[1])}`);
   return `${parts.join(" · ")} dBm`;
 }
+// Battery, e.g. "Battery 80% · 2.9 V". Percentages are worked out as aioWiserHeatAPI does.
+const lowBattery = (b) => !!b && ((b.percent != null && b.percent <= 20) || b.level?.toLowerCase() === "low");
+function batteryText(b) {
+  if (!b) return "";
+  const parts = [b.percent != null ? `Battery ${b.percent}%` : `Battery ${b.level?.toLowerCase() ?? "unknown"}`];
+  if (b.volts != null) parts.push(`${b.volts.toFixed(1)} V`);
+  return parts.join(" · ");
+}
+
 const connection = (device) =>
   !device.parent ? "" : device.parent.hub ? "Connected to the hub" : `Connected through ${device.parent.name}`;
 
@@ -211,8 +220,8 @@ function SignalDialog({ room, onClose }) {
     <dialog ref=${ref} class="dialog" aria-labelledby="signal-title" onClose=${onClose}
       onClick=${(e) => e.target === ref.current && close()}>
       <div class="dialog-body">
-        <h2 id="signal-title">${room.name} signal</h2>
-        <p class="hint">How well each device is heard, and what it's connected to: devices can reach the hub through another device. Closer to 0 dBm is stronger.</p>
+        <h2 id="signal-title">${room.name} devices</h2>
+        <p class="hint">Each device's signal, battery, and what it's connected to: devices can reach the hub through another device. Closer to 0 dBm is stronger.</p>
         <ul class="signal-list">
           ${room.devices.map((d) => html`
             <li key=${d.id} data-weak=${signalBars(d) != null && signalBars(d) <= 1}>
@@ -220,6 +229,7 @@ function SignalDialog({ room, onClose }) {
                 ${d.name}
                 ${connection(d) && html`<span class="signal-power" data-via=${d.parent && !d.parent.hub}>${connection(d)}</span>`}
                 ${signalPower(d) && html`<span class="signal-power">${signalPower(d)}</span>`}
+                ${d.battery && html`<span class="signal-power" data-low=${lowBattery(d.battery)}>${batteryText(d.battery)}</span>`}
               </span>
               ${signalBars(d) != null && barsIcon(signalBars(d))}
               <span class="signal-text">${signalText(d)}</span>
@@ -242,6 +252,7 @@ function RoomCard({ room, system, actions }) {
   // The weakest device sets the room's icon: one bad valve is what you'd want to know about.
   const rated = (room.devices || []).filter((d) => signalScore(d) != null);
   const weakest = rated.length ? rated.reduce((a, b) => (signalScore(b) < signalScore(a) ? b : a)) : null;
+  const lowCount = (room.devices || []).filter((d) => lowBattery(d.battery)).length;
 
   return html`
     <article class="card" data-heating=${heating}>
@@ -250,6 +261,12 @@ function RoomCard({ room, system, actions }) {
         <div class="pills">
           ${room.window_open && html`<span class="pill">Window open</span>`}
           ${heating && html`<span class="pill" data-kind="heat">Heating</span>`}
+          ${lowCount > 0 && html`
+            <button class="pill" data-kind="warn" onClick=${() => actions.openSignal(room)}
+              aria-label=${`${room.name}: ${lowCount > 1 ? `${lowCount} devices have` : "a device has"} a low battery. Show devices`}>
+              Low battery
+            </button>
+          `}
           ${weakest && html`
             <button class="icon-btn signal-btn" data-weak=${signalBars(weakest) <= 1}
               onClick=${() => actions.openSignal(room)}

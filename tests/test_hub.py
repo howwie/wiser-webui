@@ -110,11 +110,30 @@ def test_room_devices_and_their_signal():
     out = normalise({"Room": [raw], "Device": devices})["rooms"][0]["devices"]
     assert out == [
         {"id": 10, "name": "Room thermostat", "signal": 90, "signal_label": "Very good",
-         "hub_hears_dbm": None, "device_hears_dbm": -55, "parent": None},
+         "hub_hears_dbm": None, "device_hears_dbm": -55, "battery": None, "parent": None},
         {"id": 11, "name": "Radiator valve 1", "signal": 40, "signal_label": "Medium",
-         "hub_hears_dbm": -80, "device_hears_dbm": -70, "parent": None},
+         "hub_hears_dbm": -80, "device_hears_dbm": -70, "battery": None, "parent": None},
         {"id": 12, "name": "Radiator valve 2", "signal": None, "signal_label": "No signal",
-         "hub_hears_dbm": None, "device_hears_dbm": None, "parent": None},
+         "hub_hears_dbm": None, "device_hears_dbm": None, "battery": None, "parent": None},
+    ]
+
+
+def test_battery_matches_aiowiserheatapi():
+    raw = room(RoomStatId=10, SmartValveIds=[11, 12, 13, 14])
+    devices = [
+        {"id": 10, "ProductType": "RoomStat", "BatteryVoltage": 24, "BatteryLevel": "Normal"},  # 70% of 1.7-2.7 V
+        {"id": 11, "ProductType": "iTRV", "BatteryVoltage": 31, "BatteryLevel": "Normal"},  # 3.0 V and up is full
+        {"id": 12, "ProductType": "iTRV", "BatteryVoltage": 26, "BatteryLevel": "OneThird"},  # from the valve table
+        {"id": 13, "ProductType": "iTRV", "BatteryLevel": "TwoThirds"},  # no voltage: from the level
+        {"id": 14, "ProductType": "iTRV"},  # no battery data
+    ]
+    out = normalise({"Room": [raw], "Device": devices})["rooms"][0]["devices"]
+    assert [d["battery"] for d in out] == [
+        {"percent": 70, "level": "Normal", "volts": 2.4},
+        {"percent": 100, "level": "Normal", "volts": 3.1},
+        {"percent": 20, "level": "One third", "volts": 2.6},
+        {"percent": 66, "level": "Two thirds", "volts": None},
+        None,
     ]
 
 
@@ -141,6 +160,17 @@ def test_each_device_names_what_it_is_connected_to():
         13: {"name": "Zigbee node 999", "hub": False},
         14: {"name": "Radiator valve 1 in Lounge", "hub": False},
     }
+
+
+def test_plug_name_that_already_says_plug_is_kept():
+    raw = room(Name="Master Bedroom ", SmartValveIds=[11])
+    devices = [
+        {"id": 11, "ProductType": "iTRV", "NodeId": 111, "ParentNodeId": 120},
+        {"id": 20, "ProductType": "SmartPlug", "NodeId": 120},
+    ]
+    out = normalise({"Room": [raw], "Device": devices, "SmartPlug": [{"id": 20, "Name": "Master bedroom plug"}]})
+    assert out["rooms"][0]["name"] == "Master Bedroom"
+    assert out["rooms"][0]["devices"][0]["parent"]["name"] == "Master bedroom plug"
 
 
 def test_room_without_devices():

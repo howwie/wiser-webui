@@ -187,6 +187,9 @@ h1 { margin: 0; font-size: 1.75rem; font-weight: 650; letter-spacing: -0.02em; }
 .signal-list { list-style: none; margin: 0; padding: 0; }
 .signal-list li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 0; border-top: 1px solid var(--line); }
 .signal-power { display: block; color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.signal-power[data-low="true"] { color: var(--danger); font-weight: 600; }
+button.pill { border: 0; font: inherit; font-size: 0.8rem; cursor: pointer; }
+.pill[data-kind="warn"] { background: transparent; color: var(--danger); box-shadow: inset 0 0 0 1px currentColor; font-weight: 600; }
 .signal-list li:first-child { border-top: 0; }
 .signal-name { flex: 1; color: var(--ink); }
 .signal-text { min-width: 6ch; text-align: right; font-variant-numeric: tabular-nums; }
