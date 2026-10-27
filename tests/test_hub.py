@@ -110,12 +110,37 @@ def test_room_devices_and_their_signal():
     out = normalise({"Room": [raw], "Device": devices})["rooms"][0]["devices"]
     assert out == [
         {"id": 10, "name": "Room thermostat", "signal": 90, "signal_label": "Very good",
-         "hub_hears_dbm": None, "device_hears_dbm": -55},
+         "hub_hears_dbm": None, "device_hears_dbm": -55, "parent": None},
         {"id": 11, "name": "Radiator valve 1", "signal": 40, "signal_label": "Medium",
-         "hub_hears_dbm": -80, "device_hears_dbm": -70},
+         "hub_hears_dbm": -80, "device_hears_dbm": -70, "parent": None},
         {"id": 12, "name": "Radiator valve 2", "signal": None, "signal_label": "No signal",
-         "hub_hears_dbm": None, "device_hears_dbm": None},
+         "hub_hears_dbm": None, "device_hears_dbm": None, "parent": None},
     ]
+
+
+def test_each_device_names_what_it_is_connected_to():
+    rooms = [
+        room(id=1, Name="Lounge", RoomStatId=10, SmartValveIds=[11, 12, 13]),
+        room(id=2, Name="Hall", SmartValveIds=[14]),
+    ]
+    devices = [
+        {"id": 0, "ProductType": "Controller", "NodeId": 100},
+        {"id": 10, "ProductType": "RoomStat", "NodeId": 110, "ParentNodeId": 100},
+        {"id": 11, "ProductType": "iTRV", "NodeId": 111, "ParentNodeId": 110},  # via the thermostat
+        {"id": 12, "ProductType": "iTRV", "NodeId": 112, "ParentNodeId": 120},  # via a smart plug
+        {"id": 13, "ProductType": "iTRV", "NodeId": 113, "ParentNodeId": 999},  # parent not listed
+        {"id": 14, "ProductType": "iTRV", "NodeId": 114, "ParentNodeId": 111},  # via another room's valve
+        {"id": 20, "ProductType": "SmartPlug", "NodeId": 120, "ParentNodeId": 100},
+    ]
+    out = normalise({"Room": rooms, "Device": devices, "SmartPlug": [{"id": 20, "Name": "Landing"}]})
+    parents = {d["id"]: d["parent"] for r in out["rooms"] for d in r["devices"]}
+    assert parents == {
+        10: {"name": "the hub", "hub": True},
+        11: {"name": "Room thermostat in Lounge", "hub": False},
+        12: {"name": "Landing smart plug", "hub": False},
+        13: {"name": "Zigbee node 999", "hub": False},
+        14: {"name": "Radiator valve 1 in Lounge", "hub": False},
+    }
 
 
 def test_room_without_devices():

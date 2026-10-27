@@ -48,6 +48,8 @@ Each room gets a timed hold, so its card says "Held at 20.0° until 15:30" and i
 
 The bars at the top of each room card show the signal of the room's **weakest** device, since one valve dropping out is what you'd want to spot. They turn red when it's poor. Tap them to see every valve and thermostat in the room with its own signal, and the received power in each direction: "Hub hears −66 · it hears −64 dBm". Closer to 0 dBm is stronger.
 
+The list also shows what each device is connected to. Wiser devices use Zigbee, a mesh network, so a valve far from the hub can reach it through another device, such as a smart plug or a room thermostat: "Connected through Landing smart plug". For a device connected that way, the dBm readings are shown without saying who hears whom, as it isn't known whether they're of that link or of the hub.
+
 The bars follow the hub's own rating, as in the Wiser app: 4 for "Very good", 3 for "Good". Those two have been seen on a real hub. The weaker ratings are expected to be "Medium" (2), "Poor" (1) and "No signal" (0), but those names are from memory, not confirmed. A device whose rating isn't one of these shows the hub's word as it is, and gets its bars from its radio reading instead: 4 from −62 dBm, 3 from −75, 2 from −85, 1 below that. A valve with a poor signal can miss commands; moving the hub, or adding a Wiser smart plug between them as a repeater, usually helps.
 
 ## Arranging rooms
@@ -154,6 +156,7 @@ The Wiser local API isn't officially documented. Every call below has been check
 | Read everything | `GET /data/domain/` with `SECRET` header | `get_hub_data` (it uses `/data/v2/domain/`; both work) |
 | Room schedules ("until 22:00") | `GET /data/v2/schedules/`: `{"Heating": [...]}`, matched to rooms by `ScheduleId`; each day is `{"Time": [630, …], "DegreesC": [210, …]}`. If it fails, rooms just say "Following the schedule" | Schedule collection |
 | Device signal | From the same reply: rooms list their devices (`RoomStatId`, `SmartValveIds`, `HeatingActuatorIds`, `UnderFloorHeatingId`), and each `Device` has `DisplayedSignalStrength` and `ReceptionOfController`/`ReceptionOfDevice` → `Rssi` (strength = 2 × (RSSI + 100), at most 100) | Device collection and signal helper |
+| What a device is connected to | Each `Device`'s `ParentNodeId` is the `NodeId` of the device it's connected to; the hub is the `Controller` | `device.parent_node_id` and `devices.get_by_node_id` |
 | Boost a room | `PATCH /data/v2/domain/Room/{id}` `{"RequestOverride":{"Type":"Boost","DurationMinutes":30,"IncreaseSetPointBy":20}}` (the hub adds this to the room's current temperature) | `room.boost` |
 | Set a target | `PATCH …/Room/{id}` `{"RequestOverride":{"Type":"Manual","SetPoint":215}}` (tenths of a degree) | `room.set_target_temperature` |
 | Boost several rooms to one temperature | For each room: `{"RequestOverride":{"Type":"Manual","SetPoint":200,"DurationMinutes":120}}` | `room.set_target_temperature_for_duration` |

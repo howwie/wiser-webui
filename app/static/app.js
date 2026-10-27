@@ -179,13 +179,20 @@ const signalText = (device) =>
   device.signal_label ?? (device.signal != null ? `${device.signal}%` : "Unknown");
 
 // Received power in each direction, e.g. "Hub hears −71 · it hears −69 dBm". Closer to 0 is stronger.
+// For a device connected through a repeater it isn't known whether the readings are of that link
+// or of the hub, so they're shown without saying who hears whom.
 const minus = (v) => String(v).replace("-", "−");
 function signalPower(device) {
+  const values = [device.hub_hears_dbm, device.device_hears_dbm];
+  if (values.every((v) => v == null)) return "";
+  if (device.parent && !device.parent.hub) return `Received ${values.filter((v) => v != null).map(minus).join(" · ")} dBm`;
   const parts = [];
-  if (device.hub_hears_dbm != null) parts.push(`Hub hears ${minus(device.hub_hears_dbm)}`);
-  if (device.device_hears_dbm != null) parts.push(`${parts.length ? "it" : "It"} hears ${minus(device.device_hears_dbm)}`);
-  return parts.length ? `${parts.join(" · ")} dBm` : "";
+  if (values[0] != null) parts.push(`Hub hears ${minus(values[0])}`);
+  if (values[1] != null) parts.push(`${parts.length ? "it" : "It"} hears ${minus(values[1])}`);
+  return `${parts.join(" · ")} dBm`;
 }
+const connection = (device) =>
+  !device.parent ? "" : device.parent.hub ? "Connected to the hub" : `Connected through ${device.parent.name}`;
 
 const barsIcon = (bars) => html`
   <svg class="bars" viewBox="0 0 20 16" width="20" height="16" aria-hidden="true">
@@ -205,12 +212,13 @@ function SignalDialog({ room, onClose }) {
       onClick=${(e) => e.target === ref.current && close()}>
       <div class="dialog-body">
         <h2 id="signal-title">${room.name} signal</h2>
-        <p class="hint">How well each device and the hub hear each other, as received power: closer to 0 dBm is stronger.</p>
+        <p class="hint">How well each device is heard, and what it's connected to: devices can reach the hub through another device. Closer to 0 dBm is stronger.</p>
         <ul class="signal-list">
           ${room.devices.map((d) => html`
             <li key=${d.id} data-weak=${signalBars(d) != null && signalBars(d) <= 1}>
               <span class="signal-name">
                 ${d.name}
+                ${connection(d) && html`<span class="signal-power" data-via=${d.parent && !d.parent.hub}>${connection(d)}</span>`}
                 ${signalPower(d) && html`<span class="signal-power">${signalPower(d)}</span>`}
               </span>
               ${signalBars(d) != null && barsIcon(signalBars(d))}

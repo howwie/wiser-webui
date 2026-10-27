@@ -216,6 +216,35 @@ def _room_devices(r: dict[str, Any], devices: dict[Any, dict[str, Any]]) -> list
     return found
 
 
+def _link_parents(rooms: list[dict[str, Any]], devices: dict[Any, dict[str, Any]], domain: dict[str, Any]) -> None:
+    """Give each room device the device it's connected to. Zigbee is a mesh: a valve can reach
+    the hub through a repeater such as a smart plug. Each Device has its own NodeId and the
+    ParentNodeId of the device it's connected to, as aioWiserHeatAPI reads them."""
+    names: dict[Any, str] = {}
+    for room in rooms:
+        for d in room["devices"]:
+            names[d["id"]] = f"{d['name']} in {room['name']}"  # e.g. "Radiator valve 2 in Living room"
+    for plug in domain.get("SmartPlug") or []:
+        if isinstance(plug, dict):
+            name = plug.get("Name")
+            names.setdefault(plug.get("DeviceId", plug.get("id")), f"{name} smart plug" if name else "Smart plug")
+    by_node = {d.get("NodeId"): device_id for device_id, d in devices.items() if d.get("NodeId") is not None}
+    for room in rooms:
+        for d in room["devices"]:
+            node = devices[d["id"]].get("ParentNodeId")
+            parent_id = by_node.get(node)
+            parent = devices.get(parent_id) or {}
+            if node is None:
+                d["parent"] = None
+            elif parent.get("ProductType") == "Controller" or (parent_id is None and node == 0):
+                d["parent"] = {"name": "the hub", "hub": True}
+            elif parent_id is not None:
+                product = parent.get("ProductType") or "Device"
+                d["parent"] = {"name": names.get(parent_id) or DEVICE_NAMES.get(product, product), "hub": False}
+            else:
+                d["parent"] = {"name": f"Zigbee node {node}", "hub": False}  # not in the Device list
+
+
 def normalise(domain: dict[str, Any]) -> dict[str, Any]:
     system = domain.get("System") or {}
     schedules = _heating_schedules(domain)
@@ -250,6 +279,7 @@ def normalise(domain: dict[str, Any]) -> dict[str, Any]:
                 "devices": _room_devices(r, devices),
             }
         )
+    _link_parents(rooms, devices, domain)
     channels = domain.get("HeatingChannel") or []
     return {
         "rooms": rooms,
@@ -274,15 +304,17 @@ class MockHub:
         2: ([(700, 160), (2100, 190)], [(900, 160), (2130, 190)]),  # bedroom: warm at night
     }
 
-    # Room id -> its devices as (device id, ProductType, RSSI, the hub's rating). The bathroom
-    # valve is a weak one, as you'd see with a valve behind a radiator at the far end of the house.
+    # Room id -> its devices as (device id, ProductType, RSSI, the hub's rating, parent device id).
+    # The bathroom valve is a weak one, as you'd see with a valve behind a radiator at the far end
+    # of the house; it and the bedroom valve reach the hub through the landing smart plug.
     DEVICES = {
-        1: [(10, "RoomStat", -58, "VeryGood"), (11, "iTRV", -64, "Good"), (12, "iTRV", -71, "Good")],
-        2: [(13, "iTRV", -66, "Good")],
-        3: [(14, "iTRV", -77, "Medium")],
-        4: [(15, "iTRV", -61, "VeryGood")],
-        5: [(16, "iTRV", -88, "Poor")],
+        1: [(10, "RoomStat", -58, "VeryGood", 0), (11, "iTRV", -64, "Good", 0), (12, "iTRV", -71, "Good", 0)],
+        2: [(13, "iTRV", -66, "Good", 0)],
+        3: [(14, "iTRV", -77, "Medium", 20)],
+        4: [(15, "iTRV", -61, "VeryGood", 0)],
+        5: [(16, "iTRV", -88, "Poor", 20)],
     }
+    HUB_ID, PLUG_ID = 0, 20  # device ids; each device's Zigbee NodeId is its id + 1000 here
 
     def __init__(self) -> None:
         self._last = time.time()
@@ -396,16 +428,24 @@ class MockHub:
             "HeatingChannel": [{"id": 1, "HeatingRelayState": "On" if heating else "Off"}],
             "Room": rooms,
             "Device": [
-                {
-                    "id": device_id,
-                    "ProductType": product,
-                    "DisplayedSignalStrength": rating,
-                    "ReceptionOfController": {"Rssi": rssi, "Lqi": 120},
-                    "ReceptionOfDevice": {"Rssi": rssi - 2, "Lqi": 120},
-                }
-                for devices in self.DEVICES.values()
-                for device_id, product, rssi, rating in devices
+                {"id": self.HUB_ID, "ProductType": "Controller", "NodeId": self.HUB_ID + 1000},
+                {"id": self.PLUG_ID, "ProductType": "SmartPlug", "NodeId": self.PLUG_ID + 1000,
+                 "ParentNodeId": self.HUB_ID + 1000, "DisplayedSignalStrength": "Good"},
+                *(
+                    {
+                        "id": device_id,
+                        "ProductType": product,
+                        "NodeId": device_id + 1000,
+                        "ParentNodeId": parent + 1000,
+                        "DisplayedSignalStrength": rating,
+                        "ReceptionOfController": {"Rssi": rssi, "Lqi": 120},
+                        "ReceptionOfDevice": {"Rssi": rssi - 2, "Lqi": 120},
+                    }
+                    for devices in self.DEVICES.values()
+                    for device_id, product, rssi, rating, parent in devices
+                ),
             ],
+            "SmartPlug": [{"id": self.PLUG_ID, "Name": "Landing"}],
             SCHEDULES_KEY: {"Heating": schedules},
         }
 
