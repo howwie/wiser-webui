@@ -182,9 +182,9 @@ def test_smart_plug_as_the_hub_reports_it():
               "ReceptionOfDevice": {"Rssi": -81, "Lqi": 76}}
     out = normalise({"Room": [room(id=4, Name="Master Bedroom")], "Device": [device], "SmartPlug": [plug]})
     assert out["plugs"] == [{
-        "id": 8, "name": "Master bedroom plug", "room": "Master Bedroom", "on": False, "switching_to": None,
+        "id": 8, "name": "Master bedroom plug", "room_id": 4, "room": "Master Bedroom", "on": False, "switching_to": None,
         "mode": "manual", "scheduled_on": None, "power_w": 0, "energy": 2030, "away_off": True,
-        "device": {"id": 8, "name": "Smart plug", "signal": 38, "signal_label": "Online", "hub_hears_dbm": -81,
+        "device": {"id": 8, "name": "Master bedroom plug", "signal": 38, "signal_label": "Online", "hub_hears_dbm": -81,
                    "device_hears_dbm": None, "battery": None, "repeater": True, "parent": None},
     }]
 
@@ -197,6 +197,7 @@ def test_plug_switching_and_connection():
     ]
     out = normalise({"Device": devices, "SmartPlug": [plug]})["plugs"][0]
     assert (out["on"], out["switching_to"]) == (False, True)
+    assert out["room_id"] is None  # in no room, so it gets a card of its own
     assert out["device"]["parent"] == {"name": "the hub", "hub": True}
 
 
@@ -208,6 +209,14 @@ def test_manual_override_keeps_its_end_time():
     r = only_room(SetpointOrigin="FromManualOverride", OverrideType="Manual", OverrideTimeoutUnixTime=1_700_000_000)
     assert r["override"] is True
     assert r["until"] == 1_700_000_000
+
+
+def test_eco_mode_adjustment_is_not_a_hold():
+    # As a real hub reports a room while eco mode is on.
+    r = only_room(SetpointOrigin="FromEcoIQ", OverrideType="EcoIQ", OverrideSetpoint=125,
+                  CurrentSetPoint=125, ScheduledSetPoint=125)
+    assert r["override"] is False
+    assert r["until"] is None
 
 
 def test_end_time_ignored_without_an_override():

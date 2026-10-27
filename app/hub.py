@@ -245,6 +245,11 @@ def _room_devices(r: dict[str, Any], devices: dict[Any, dict[str, Any]]) -> list
     return found
 
 
+def _plug_label(name: str) -> str:
+    """"Landing" -> "Landing smart plug", but "Master bedroom plug" stays as it is."""
+    return name if "plug" in name.lower() else f"{name} smart plug" if name else "Smart plug"
+
+
 def _link_parents(
     rooms: list[dict[str, Any]], plugs: list[dict[str, Any]], devices: dict[Any, dict[str, Any]], domain: dict[str, Any]
 ) -> None:
@@ -257,10 +262,7 @@ def _link_parents(
             names[d["id"]] = f"{d['name']} in {room['name']}"  # e.g. "Radiator valve 2 in Living room"
     for plug in domain.get("SmartPlug") or []:
         if isinstance(plug, dict):
-            name = (plug.get("Name") or "").strip()
-            # "Landing" -> "Landing smart plug", but "Master bedroom plug" stays as it is.
-            label = name if "plug" in name.lower() else f"{name} smart plug" if name else "Smart plug"
-            names.setdefault(plug.get("DeviceId", plug.get("id")), label)
+            names.setdefault(plug.get("DeviceId", plug.get("id")), _plug_label((plug.get("Name") or "").strip()))
     by_node = {d.get("NodeId"): device_id for device_id, d in devices.items() if d.get("NodeId") is not None}
     for d in [d for room in rooms for d in room["devices"]] + [p["device"] for p in plugs]:
         node = (devices.get(d["id"]) or {}).get("ParentNodeId")
@@ -284,12 +286,15 @@ def _plugs(domain: dict[str, Any], devices: dict[Any, dict[str, Any]], room_name
         if not isinstance(p, dict) or p.get("id") is None:
             continue
         device_id = p.get("DeviceId", p["id"])
+        name = (p.get("Name") or "").strip()
         power, energy = p.get("InstantaneousDemand"), p.get("CurrentSummationDelivered")
         output, target = p.get("OutputState"), p.get("TargetState")
         plugs.append(
             {
                 "id": p["id"],
-                "name": (p.get("Name") or "").strip() or f"Smart plug {p['id']}",
+                "name": name or f"Smart plug {p['id']}",
+                # A plug in a room is shown in that room's card; one in no room (RoomId 0) on its own.
+                "room_id": p.get("RoomId") if p.get("RoomId") in room_names else None,
                 "room": room_names.get(p.get("RoomId")),
                 "on": output == "On",
                 # TargetState leads OutputState while the plug is still switching.
@@ -301,7 +306,7 @@ def _plugs(domain: dict[str, Any], devices: dict[Any, dict[str, Any]], room_name
                 "away_off": p.get("AwayAction") == "Off",
                 # Signal and connection, the same as a room's devices (filled in by _link_parents).
                 # A plug is a Zigbee repeater (router): hubs report no single parent for it.
-                "device": {**_device_info(device_id, devices.get(device_id) or {}, "Smart plug"), "repeater": True},
+                "device": {**_device_info(device_id, devices.get(device_id) or {}, _plug_label(name)), "repeater": True},
             }
         )
     return plugs
@@ -318,7 +323,9 @@ def normalise(domain: dict[str, Any]) -> dict[str, Any]:
         origin = r.get("SetpointOrigin") or r.get("SetPointOrigin") or ""
         mode = str(r.get("Mode") or "Auto").lower()
         boost = "Boost" in origin
-        override = (not boost) and (r.get("OverrideType") or "None") not in ("None", "")
+        # Eco mode's own adjustments show as an EcoIQ override (origin FromEcoIQ); they aren't a
+        # hold anyone set, and the Wiser app shows such a room as on its schedule.
+        override = (not boost) and (r.get("OverrideType") or "None") not in ("None", "", "EcoIQ")
         until = r.get("OverrideTimeoutUnixTime") or None
         schedule = schedules.get(r.get("ScheduleId"))
         rooms.append(
@@ -371,7 +378,7 @@ class MockHub:
 
     # Room id -> its devices as (device id, ProductType, RSSI, the hub's rating, parent device id).
     # The bathroom valve is a weak one, as you'd see with a valve behind a radiator at the far end
-    # of the house; it and the bedroom valve reach the hub through the landing smart plug.
+    # of the house; it and the bedroom valve reach the hub through the bedroom smart plug.
     DEVICES = {
         1: [(10, "RoomStat", -58, "VeryGood", 0), (11, "iTRV", -64, "Good", 0), (12, "iTRV", -71, "Good", 0)],
         2: [(13, "iTRV", -66, "Good", 0)],
@@ -397,7 +404,7 @@ class MockHub:
             i: {"Name": name, "temp": temp, "Mode": "Auto", "manual": 210, "ov": None}
             for i, (name, temp) in enumerate(start.items(), start=1)
         }
-        # The landing smart plug: a 35 W lamp, on a 17:00-23:00 schedule. "override" is a switch
+        # The bedroom smart plug: a 35 W bedside lamp, on a 17:00-23:00 schedule. "override" is a switch
         # made in Auto mode, kept until the schedule next changes (scheduled state it was made in).
         self.plug = {"Mode": "Auto", "manual": "Off", "AwayAction": "Off", "override": None, "wh": 2030.0, "pending": None}
 
@@ -554,7 +561,8 @@ class MockHub:
         output, source = self._plug_output()
         return {
             "id": self.PLUG_ID,
-            "Name": "Landing",
+            "Name": "Bedside lamp",
+            "RoomId": 3,
             "Mode": self.plug["Mode"],
             "ManualState": self.plug["manual"],
             "ScheduledState": self._plug_scheduled(),

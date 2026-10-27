@@ -42,7 +42,7 @@ Open `http://<nas-address>:8080`. You'll see five demo rooms and a banner saying
 
 **Boost rooms…** above the rooms heats the rooms you pick to one temperature for 30 minutes to 3 hours: say the bedroom at 15° and the living room at 16°, both to 20° for 2 hours. A normal boost adds a fixed amount to each room's own target, so the rooms would end up at different temperatures.
 
-Each room gets a timed hold, so its card says "Held at 20.0° until 15:30" and it goes back to its schedule (or manual setting) by itself when the time is up. The ✕ next to that line ends it early for one room.
+Each room gets a timed hold, so its card says "Held at 20.0° until 15:30" and it goes back to its schedule (or manual setting) by itself when the time is up. The ✕ next to that line ends it early for one room. Eco mode's own adjustments (which the hub reports as an "EcoIQ" override) aren't a hold, so a room under eco mode still shows as on its schedule, as in the Wiser app.
 
 ## Signal strength
 
@@ -54,10 +54,12 @@ The bars follow the hub's own rating, as in the Wiser app: 4 for "Very good", 3 
 
 ## Smart plugs
 
-Wiser smart plugs appear under **Smart plugs**, below the rooms, with the room they belong to. Each card has:
+A Wiser smart plug that belongs to a room appears at the bottom of that room's card, as one line: its name, what it's doing (for example "35 W · On schedule") and an on/off switch. Tap its name for the rest of its settings. The plug also joins the room's device list, so the room's signal icon covers it too. A plug that isn't in a room gets a card of its own under **Smart plugs**, below the rooms.
+
+A plug's settings are:
 
 - **An on/off switch.** In Manual mode the plug stays as you set it. Following its schedule, the hub keeps your change until the schedule next switches it. A plug takes a moment to switch over Zigbee, so the card says "Switching on…" until the plug confirms it (the server waits up to 8 seconds); if it doesn't, the page says so.
-- **Signal bars.** Tap them for its dBm reading. A plug is a repeater, so the hub reports no single device it's connected to.
+- **Signal.** Its dBm reading. A plug is a repeater, so the hub reports no single device it's connected to.
 - **Schedule or Manual.**
 - **Power now and energy used,** as the plug reports them. The energy total is taken to be in watt-hours and shown in kWh; that unit isn't confirmed.
 - **Off in away mode:** whether turning on away mode switches the plug off, or leaves it alone.

@@ -218,6 +218,21 @@ const barsIcon = (bars) => html`
   </svg>
 `;
 
+function DeviceItem({ device: d }) {
+  return html`
+    <li data-weak=${signalBars(d) != null && signalBars(d) <= 1}>
+      <span class="signal-name">
+        ${d.name}
+        ${connection(d) && html`<span class="signal-power" data-via=${d.parent && !d.parent.hub}>${connection(d)}</span>`}
+        ${signalPower(d) && html`<span class="signal-power">${signalPower(d)}</span>`}
+        ${d.battery && html`<span class="signal-power" data-low=${lowBattery(d.battery)}>${batteryText(d.battery)}</span>`}
+      </span>
+      ${signalBars(d) != null && barsIcon(signalBars(d))}
+      <span class="signal-text">${signalText(d)}</span>
+    </li>
+  `;
+}
+
 function SignalDialog({ room, onClose }) {
   const ref = useRef(null);
   useEffect(() => { ref.current.showModal(); }, []);
@@ -229,18 +244,7 @@ function SignalDialog({ room, onClose }) {
         <h2 id="signal-title">${room.title}</h2>
         <p class="hint">Each device's signal, battery, and what it's connected to: devices can reach the hub through another device. Closer to 0 dBm is stronger.</p>
         <ul class="signal-list">
-          ${room.devices.map((d) => html`
-            <li key=${d.id} data-weak=${signalBars(d) != null && signalBars(d) <= 1}>
-              <span class="signal-name">
-                ${d.name}
-                ${connection(d) && html`<span class="signal-power" data-via=${d.parent && !d.parent.hub}>${connection(d)}</span>`}
-                ${signalPower(d) && html`<span class="signal-power">${signalPower(d)}</span>`}
-                ${d.battery && html`<span class="signal-power" data-low=${lowBattery(d.battery)}>${batteryText(d.battery)}</span>`}
-              </span>
-              ${signalBars(d) != null && barsIcon(signalBars(d))}
-              <span class="signal-text">${signalText(d)}</span>
-            </li>
-          `)}
+          ${room.devices.map((d) => html`<${DeviceItem} key=${d.id} device=${d} />`)}
         </ul>
         <div class="dialog-foot">
           <button class="btn" data-kind="quiet" onClick=${close}>Close</button>
@@ -250,15 +254,19 @@ function SignalDialog({ room, onClose }) {
   `;
 }
 
+// A room's valves and thermostat, and the smart plugs in it.
+const roomDevices = (room) => [...(room.devices || []), ...(room.plugs || []).map((p) => p.device).filter(Boolean)];
+
 function RoomCard({ room, system, actions }) {
   const heating = room.demand > 0;
   const target = room.target;
   const hasReading = room.temp != null;
   const shown = halfDeg(room.temp);
   // The weakest device sets the room's icon: one bad valve is what you'd want to know about.
-  const rated = (room.devices || []).filter((d) => signalScore(d) != null);
+  const devices = roomDevices(room);
+  const rated = devices.filter((d) => signalScore(d) != null);
   const weakest = rated.length ? rated.reduce((a, b) => (signalScore(b) < signalScore(a) ? b : a)) : null;
-  const lowCount = (room.devices || []).filter((d) => lowBattery(d.battery)).length;
+  const lowCount = devices.filter((d) => lowBattery(d.battery)).length;
 
   return html`
     <article class="card" data-heating=${heating}>
@@ -276,8 +284,8 @@ function RoomCard({ room, system, actions }) {
           ${weakest && html`
             <button class="icon-btn signal-btn" data-weak=${signalBars(weakest) <= 1}
               onClick=${() => actions.openSignal(room)}
-              title=${`Signal: ${signalText(weakest)}${rated.length > 1 ? ` (weakest of ${room.devices.length} devices)` : ""}`}
-              aria-label=${`${room.name} signal: ${signalText(weakest)}${rated.length > 1 ? `, weakest of ${room.devices.length} devices` : ""}. Show devices`}>
+              title=${`Signal: ${signalText(weakest)}${rated.length > 1 ? ` (weakest of ${devices.length} devices)` : ""}`}
+              aria-label=${`${room.name} signal: ${signalText(weakest)}${rated.length > 1 ? `, weakest of ${devices.length} devices` : ""}. Show devices`}>
               ${barsIcon(signalBars(weakest))}
             </button>
           `}
@@ -326,6 +334,12 @@ function RoomCard({ room, system, actions }) {
           title=${room.boost ? "Cancel boost" : undefined}
           onClick=${() => (room.boost ? actions.boost(room, 0) : actions.openBoost(room))}>Boost</button>
       </div>
+
+      ${room.plugs?.length > 0 && html`
+        <ul class="plug-rows" aria-label=${`${room.name} smart plugs`}>
+          ${room.plugs.map((plug) => html`<${PlugRow} key=${plug.id} plug=${plug} actions=${actions} />`)}
+        </ul>
+      `}
     </article>
   `;
 }
@@ -341,10 +355,100 @@ function plugStatus(plug) {
   return `Following its schedule (${state})`;
 }
 
+const plugIcon = html`
+  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"
+    stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4" />
+  </svg>
+`;
+
+// While a plug is switching, its switch shows where it's going rather than flicking back.
+const PlugSwitch = ({ plug, actions }) => {
+  const target = plug.switching_to ?? plug.on;
+  return html`
+    <button class="switch" role="switch" aria-checked=${target} aria-label=${`${plug.name} power`}
+      data-pending=${plug.switching_to != null} onClick=${() => actions.plugPower(plug, !target)}></button>
+  `;
+};
+
+// A smart plug in its room's card: one line, with the rest of its settings in a dialog.
+function PlugRow({ plug, actions }) {
+  // Shorter than plugStatus, to fit one line beside the switch; the dialog has the full wording.
+  const how = plug.switching_to != null ? `Switching ${plug.switching_to ? "on" : "off"}…`
+    : plug.mode === "manual" ? "Manual"
+    : plug.scheduled_on != null && plug.scheduled_on !== plug.on ? "Until the schedule changes"
+    : "On schedule";
+  const status = [plug.on && plug.power_w ? `${plug.power_w} W` : "", how].filter(Boolean).join(" · ");
+  return html`
+    <li class="plug-row" data-on=${plug.on}>
+      <button class="plug-open" onClick=${() => actions.openPlug(plug)} title=${status}
+        aria-label=${`${plug.name}: ${status}. Show plug settings`}>
+        ${plugIcon}
+        <span class="plug-text">
+          <span class="plug-name">${plug.name}</span>
+          <span class="status">${status}</span>
+        </span>
+      </button>
+      <${PlugSwitch} plug=${plug} actions=${actions} />
+    </li>
+  `;
+}
+
+// A plug's state and settings: in its own card for a plug in no room, else in the plug dialog.
+function PlugControls({ plug, actions }) {
+  return html`
+    <div class="plug-main">
+      <div>
+        <p class="plug-state">${plug.on ? "On" : "Off"}</p>
+        <p class="status" title=${plugStatus(plug)}>${plugStatus(plug)}</p>
+      </div>
+      <${PlugSwitch} plug=${plug} actions=${actions} />
+    </div>
+
+    ${(plug.power_w != null || plug.energy != null) && html`
+      <p class="plug-meter">
+        ${plug.power_w != null && html`<span><strong>${plug.power_w} W</strong> now</span>`}
+        ${plug.energy != null && html`<span><strong>${kwh(plug.energy)}</strong> used</span>`}
+      </p>
+    `}
+
+    <div class="controls">
+      <div class="segment" role="radiogroup" aria-label=${`${plug.name} mode`}>
+        <button role="radio" aria-checked=${plug.mode === "auto"} onClick=${() => plug.mode !== "auto" && actions.plugMode(plug, "auto")}>Schedule</button>
+        <button role="radio" aria-checked=${plug.mode === "manual"} onClick=${() => plug.mode !== "manual" && actions.plugMode(plug, "manual")}>Manual</button>
+      </div>
+      <label class="check">
+        <input type="checkbox" checked=${plug.away_off} onChange=${(e) => actions.plugAway(plug, e.currentTarget.checked)} />
+        Off in away mode
+      </label>
+    </div>
+  `;
+}
+
+function PlugDialog({ plug, actions, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => { ref.current.showModal(); }, []);
+  const close = () => ref.current.close();
+  return html`
+    <dialog ref=${ref} class="dialog plug" aria-labelledby="plug-title" onClose=${onClose}
+      onClick=${(e) => e.target === ref.current && close()}>
+      <div class="dialog-body">
+        <div>
+          <h2 id="plug-title">${plug.name}</h2>
+          ${plug.room && html`<p class="plug-room">Smart plug in ${plug.room}</p>`}
+        </div>
+        <${PlugControls} plug=${plug} actions=${actions} />
+        ${plug.device && html`<ul class="signal-list"><${DeviceItem} device=${plug.device} /></ul>`}
+        <div class="dialog-foot">
+          <button class="btn" data-kind="quiet" onClick=${close}>Close</button>
+        </div>
+      </div>
+    </dialog>
+  `;
+}
+
 function PlugCard({ plug, actions }) {
   const bars = plug.device ? signalBars(plug.device) : null;
-  // While the plug is switching, the switch shows where it's going rather than flicking back.
-  const target = plug.switching_to ?? plug.on;
   return html`
     <article class="card plug" data-on=${plug.on}>
       <div class="card-head">
@@ -362,32 +466,7 @@ function PlugCard({ plug, actions }) {
         </div>
       </div>
 
-      <div class="plug-main">
-        <div>
-          <p class="plug-state">${plug.on ? "On" : "Off"}</p>
-          <p class="status" title=${plugStatus(plug)}>${plugStatus(plug)}</p>
-        </div>
-        <button class="switch" role="switch" aria-checked=${target} aria-label=${`${plug.name} power`}
-          data-pending=${plug.switching_to != null} onClick=${() => actions.plugPower(plug, !target)}></button>
-      </div>
-
-      ${(plug.power_w != null || plug.energy != null) && html`
-        <p class="plug-meter">
-          ${plug.power_w != null && html`<span><strong>${plug.power_w} W</strong> now</span>`}
-          ${plug.energy != null && html`<span><strong>${kwh(plug.energy)}</strong> used</span>`}
-        </p>
-      `}
-
-      <div class="controls">
-        <div class="segment" role="radiogroup" aria-label=${`${plug.name} mode`}>
-          <button role="radio" aria-checked=${plug.mode === "auto"} onClick=${() => plug.mode !== "auto" && actions.plugMode(plug, "auto")}>Schedule</button>
-          <button role="radio" aria-checked=${plug.mode === "manual"} onClick=${() => plug.mode !== "manual" && actions.plugMode(plug, "manual")}>Manual</button>
-        </div>
-        <label class="check">
-          <input type="checkbox" checked=${plug.away_off} onChange=${(e) => actions.plugAway(plug, e.currentTarget.checked)} />
-          Off in away mode
-        </label>
-      </div>
+      <${PlugControls} plug=${plug} actions=${actions} />
     </article>
   `;
 }
@@ -447,6 +526,7 @@ function App() {
   const [boostRoomId, setBoostRoomId] = useState(null);
   const [holding, setHolding] = useState(false); // the "Boost rooms" dialog is open
   const [signalRoomId, setSignalRoomId] = useState(null);
+  const [plugDialogId, setPlugDialogId] = useState(null);
   const [, setMinute] = useState(0);
   const [arranging, setArranging] = useState(false);
   const [announcement, setAnnouncement] = useState("");
@@ -585,6 +665,9 @@ function App() {
     openBoost(room) {
       setBoostRoomId(room.id);
     },
+    openPlug(plug) {
+      setPlugDialogId(plug.id);
+    },
     openSignal(target) {
       // A room, or { plug } for a smart plug's own details.
       setSignalRoomId(target.plug ? `plug-${target.plug.id}` : `room-${target.id}`);
@@ -655,12 +738,16 @@ function App() {
     rooms = [...rooms].sort((a, b) => (rank.get(a.id) ?? rank.size) - (rank.get(b.id) ?? rank.size));
   }
   const plugs = (data.plugs || []).map((p) => ({ ...p, ...(local[`plug-${p.id}`] || {}) }));
+  // A plug in a room is shown in that room's card; only plugs in no room get cards of their own.
+  rooms = rooms.map((r) => ({ ...r, plugs: plugs.filter((p) => p.room_id === r.id) }));
+  const loosePlugs = plugs.filter((p) => !rooms.some((r) => r.id === p.room_id));
+  const dialogPlug = plugs.find((p) => p.id === plugDialogId);
   const boostRoom = rooms.find((r) => r.id === boostRoomId);
   // What the device list shows: a room's devices, or a smart plug on its own.
   const signalRoomMatch = rooms.find((r) => `room-${r.id}` === signalRoomId);
   const signalPlugMatch = plugs.find((p) => `plug-${p.id}` === signalRoomId && p.device);
   const signalRoom = signalRoomMatch
-    ? { title: `${signalRoomMatch.name} devices`, devices: signalRoomMatch.devices }
+    ? { title: `${signalRoomMatch.name} devices`, devices: roomDevices(signalRoomMatch) }
     : signalPlugMatch && { title: signalPlugMatch.name, devices: [signalPlugMatch.device] };
 
   return html`
@@ -701,11 +788,11 @@ function App() {
             ${rooms.map((room) => html`<${RoomCard} key=${room.id} room=${room} system=${system} actions=${actions} />`)}
           </section>`}
 
-      ${plugs.length > 0 && !arranging && html`
+      ${loosePlugs.length > 0 && !arranging && html`
         <section aria-labelledby="plugs-title">
           <h2 class="section-title" id="plugs-title">Smart plugs</h2>
           <div class="rooms">
-            ${plugs.map((plug) => html`<${PlugCard} key=${plug.id} plug=${plug} actions=${actions} />`)}
+            ${loosePlugs.map((plug) => html`<${PlugCard} key=${plug.id} plug=${plug} actions=${actions} />`)}
           </div>
         </section>
       `}
@@ -729,6 +816,7 @@ function App() {
     </main>
     ${boostRoom && html`<${BoostDialog} room=${boostRoom} onPick=${actions.boost} onClose=${() => setBoostRoomId(null)} />`}
     ${signalRoom && html`<${SignalDialog} room=${signalRoom} onClose=${() => setSignalRoomId(null)} />`}
+    ${dialogPlug && html`<${PlugDialog} plug=${dialogPlug} actions=${actions} onClose=${() => setPlugDialogId(null)} />`}
     ${holding && html`<${HoldDialog} rooms=${rooms} onApply=${actions.hold} onClose=${() => setHolding(false)} />`}
     ${toast &&html`<div class="toast" role="status">${toast}</div>`}
   `;
