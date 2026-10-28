@@ -313,6 +313,12 @@ button.pill { border: 0; font: inherit; font-size: 0.8rem; cursor: pointer; }
   box-shadow: 0 20px 50px rgb(0 0 0 / 0.3);
 }
 .dialog::backdrop { background: rgb(8 14 18 / 0.55); }
+/* A browser lets the page behind a modal dialog scroll; stop it while one is open. The page keeps
+   room for its scrollbar so nothing shifts sideways when the scrollbar goes. A list scrolling
+   inside a dialog doesn't pass its scroll on to the page when it reaches the end. */
+html { scrollbar-gutter: stable; }
+html:has(dialog[open]) { overflow: hidden; }
+.dialog, .pick-rooms { overscroll-behavior: contain; }
 .dialog-body { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
 .dialog h2 { margin: 0; font-size: 1.2rem; font-weight: 600; }
 .dialog .hint { margin: -8px 0 0; color: var(--muted); font-size: 0.9rem; }
