@@ -1,4 +1,5 @@
 import { html, render, useState, useEffect, useRef } from "./vendor/htm-preact.js";
+import { nextChange } from "./schedule.mjs";
 
 const MIN_TEMP = 5;
 const MAX_TEMP = 30;
@@ -22,26 +23,6 @@ async function request(method, path, body) {
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.detail || `The request failed (${res.status}).`);
   return json;
-}
-
-// The room's next schedule entry after now, as { at: Date, temp, days }. The schedule is 7 lists
-// (Monday first) of [minutes after midnight, degrees or null for off], in the hub's local time,
-// which is this browser's local time too. With `current` given, entries that keep the same
-// temperature are skipped, so "until" means until the temperature actually changes.
-function nextChange(schedule, current, now = new Date()) {
-  if (!schedule) return null;
-  const today = (now.getDay() + 6) % 7;
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  for (let days = 0; days <= 7; days++) {
-    for (const [minutes, temp] of schedule[(today + days) % 7]) {
-      if ((days === 0 && minutes <= nowMinutes) || temp === current) continue;
-      const at = new Date(now);
-      at.setDate(now.getDate() + days);
-      at.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
-      return { at, temp, days };
-    }
-  }
-  return null;
 }
 
 const hhmm = (date) => date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
@@ -802,15 +783,17 @@ function App() {
           ${data.updated ? `Hub last read at ${clock(data.updated)}.` : ""}
           ${live ? "" : paused ? " Live updates paused while the page is idle. Move the mouse or tap to resume." : " Reconnecting for live updates…"}
         </p>
-        <div class="foot-actions">
-          <label class="check" title="For a wall tablet or other always-on screen: stay live even when nobody touches it. Turning the screen off still pauses it.">
-            <input type="checkbox" checked=${keepLive} onChange=${(e) => changeKeepLive(e.currentTarget.checked)} />
-            Keep live on this device
-          </label>
-          ${rooms.length > 1 && !arranging && html`
-            <button class="btn" data-kind="quiet" onClick=${() => setArranging(true)}>Arrange rooms</button>
-          `}
-        </div>
+        ${!arranging && html`
+          <div class="foot-actions">
+            <label class="check" title="For a wall tablet or other always-on screen: stay live even when nobody touches it. Turning the screen off still pauses it.">
+              <input type="checkbox" checked=${keepLive} onChange=${(e) => changeKeepLive(e.currentTarget.checked)} />
+              Keep live on this device
+            </label>
+            ${rooms.length > 1 && html`
+              <button class="btn" data-kind="quiet" onClick=${() => setArranging(true)}>Arrange rooms</button>
+            `}
+          </div>
+        `}
       </div>
       <p class="sr-only" aria-live="polite">${announcement}</p>
     </main>

@@ -165,6 +165,7 @@ cd /volume1/docker/wiser-webui && sudo docker compose pull && sudo docker compos
 - The password travels unencrypted over your home network. It's fine for a home LAN, but don't expose the port to the internet.
 - For access away from home, use a VPN such as Tailscale or WireGuard. Don't port-forward this.
 - The server only answers requests addressed to an IP address, `localhost`, or a name in `WISER_ALLOWED_HOSTS`. This stops a web page you visit from pointing its own domain at your NAS and sending your heating commands through your browser ("DNS rebinding"). If you open the page by a name, such as `http://nas.lan:8080` or a Tailscale name, add that name or you'll see "Unknown host name".
+- Writes must be sent as JSON, and a browser's must come from a page on this server's own host name. Another site's page therefore can't send commands to the server's address either. Scripts need `Content-Type: application/json`.
 - The hub itself speaks plain HTTP, which is how every Wiser tool works.
 
 ## How sure are we about each hub call?
@@ -239,7 +240,8 @@ Away and eco are checked after every change: if the hub accepts the command but 
 app/main.py        server, hub polling, API
 app/hub.py         hub client, mock hub, data normalising
 app/static/        the page (Preact + htm, no build step)
-tests/             pytest tests (pip install -r requirements-dev.txt, then pytest)
+tests/             pytest tests (pip install -r requirements-dev.txt, then pytest), and
+                   page logic tests (node --test tests/schedule.test.mjs)
 ```
 
 The page uses a vendored copy of Preact and htm (`app/static/vendor/`), so it works with no internet access. Edit the files in `app/static/` and rebuild the image to change the UI.

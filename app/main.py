@@ -181,23 +181,17 @@ class Store:
                 failure = str(exc)
                 log.warning("Write failed: %s", failure)
             await self._read_locked()  # always resync, even after a failure
-            deadline = time.monotonic() + settle_seconds
-            while failure is None and verify and self.state and not verify(self.state) and time.monotonic() < deadline:
-                await asyncio.sleep(1)
-                await self._read_locked()
-            if failure is None and verify and self.state and not verify(self.state):
-                failure = unverified_message
-                log.warning("Write accepted but had no effect: %s", failure)
+        # The lock is only held for each read, so a slow plug doesn't hold up everything else.
+        deadline = time.monotonic() + settle_seconds
+        while failure is None and verify and self.state and not verify(self.state) and time.monotonic() < deadline:
+            await asyncio.sleep(1)
+            await self.refresh()
+        if failure is None and verify and self.state and not verify(self.state):
+            # self.error is only set if the last read failed: then the old state proves nothing.
+            failure = f"The command was sent, but the hub couldn't be read to confirm it. {self.error}" if self.error else unverified_message
+            log.warning("Write not confirmed: %s", failure)
         if failure:
             raise HTTPException(status_code=502, detail=failure)
-
-    def require_room(self, room_id: int) -> dict[str, Any]:
-        if self.state is None:
-            raise HTTPException(status_code=503, detail=self.error or "Still connecting to the hub.")
-        room = next((r for r in self.state["rooms"] if r["id"] == room_id), None)
-        if room is None:
-            raise HTTPException(status_code=404, detail="No such room.")
-        return room
 
 
 store: Store
@@ -303,17 +297,23 @@ if PASSWORD:
 
 
 # --------------------------------------------------------------------------
-# Host header check (blocks DNS rebinding: a web page you visit pointing its
-# own hostname at this server so your browser sends it commands)
+# Host and write checks. The Host check blocks DNS rebinding (a web page you visit
+# pointing its own hostname at this server so your browser sends it commands). The
+# write check blocks the same page simply posting to this server's address.
 # --------------------------------------------------------------------------
-def host_allowed(host_header: str, extra: set[str]) -> bool:
-    """IP addresses and localhost are always fine; any other name must be listed in WISER_ALLOWED_HOSTS."""
-    host = host_header.strip().lower()
+def hostname(host: str) -> str:
+    """'NAS.lan:8080' -> 'nas.lan'; '[::1]:8080' -> '::1'."""
+    host = host.strip().lower()
     if host.startswith("["):  # [IPv6]:port
         host = host[1:].partition("]")[0]
     elif host.count(":") == 1:  # name:port or IPv4:port
         host = host.partition(":")[0]
-    host = host.rstrip(".")
+    return host.rstrip(".")
+
+
+def host_allowed(host_header: str, extra: set[str]) -> bool:
+    """IP addresses and localhost are always fine; any other name must be listed in WISER_ALLOWED_HOSTS."""
+    host = hostname(host_header)
     if not host:
         return False
     if host == "localhost" or host in extra:
@@ -325,6 +325,18 @@ def host_allowed(host_header: str, extra: set[str]) -> bool:
         return False
 
 
+def write_allowed(origin: str, content_type: str, host_header: str, extra: set[str]) -> bool:
+    """A write must be JSON, which another site's page can't send here (browsers ask first, and this
+    server never says yes), and come from no web page or this page's own host. Ports are ignored, and
+    listed names accepted, as a reverse proxy may change the port or the Host header."""
+    if content_type.partition(";")[0].strip().lower() != "application/json":
+        return False
+    if not origin:  # not from a web page, e.g. curl or a script
+        return True
+    name = hostname(origin.partition("://")[2])
+    return bool(name) and (name == hostname(host_header) or name in extra)
+
+
 class HostCheck:
     def __init__(self, app: Any, allowed: set[str]) -> None:
         self.app = app
@@ -333,11 +345,17 @@ class HostCheck:
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http" or scope["path"] == "/healthz":
             return await self.app(scope, receive, send)
-        host = dict(scope["headers"]).get(b"host", b"").decode("latin-1")
+        headers = dict(scope["headers"])
+        host = headers.get(b"host", b"").decode("latin-1")
         if not host_allowed(host, self.allowed):
             log.warning("Refused request for unknown host %r. Add it to WISER_ALLOWED_HOSTS if it's yours.", host)
             response = Response("Unknown host name. Add it to WISER_ALLOWED_HOSTS.", 400)
             return await response(scope, receive, send)
+        if scope["method"] not in ("GET", "HEAD") and not write_allowed(
+            headers.get(b"origin", b"").decode("latin-1"), headers.get(b"content-type", b"").decode("latin-1"), host, self.allowed
+        ):
+            log.warning("Refused a %s to %s that wasn't same-site JSON.", scope["method"], scope["path"])
+            return await Response("Writes must be JSON, from this page or a script.", 403)(scope, receive, send)
         await self.app(scope, receive, send)
 
 
@@ -375,6 +393,34 @@ class OrderIn(BaseModel):
     order: list[int] = Field(max_length=200)  # room ids, first to last
 
 
+async def read_if_stale() -> None:
+    """With no page open nothing polls, so read on demand. Wait at most a few seconds: if the hub
+    is unreachable, carry on with the last readings (and the error) instead."""
+    if not store.subscribers and store.age() >= POLL_SECONDS:
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(store.refresh_if_older_than(POLL_SECONDS)), timeout=5)
+
+
+async def current_state() -> dict[str, Any]:
+    """The hub's state, recent enough to base a write on."""
+    await read_if_stale()
+    if store.state is None:
+        raise HTTPException(status_code=503, detail=store.error or "Still connecting to the hub.")
+    return store.state
+
+
+async def require_room(room_id: int) -> dict[str, Any]:
+    room = next((r for r in (await current_state())["rooms"] if r["id"] == room_id), None)
+    if room is None:
+        raise HTTPException(status_code=404, detail="No such room.")
+    return room
+
+
+async def require_plug(plug_id: int) -> None:
+    if not any(p["id"] == plug_id for p in (await current_state()).get("plugs", [])):
+        raise HTTPException(status_code=404, detail="No such smart plug.")
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, bool]:
     return {"ok": True}
@@ -382,11 +428,7 @@ async def healthz() -> dict[str, bool]:
 
 @app.get("/api/state")
 async def get_state() -> dict[str, Any]:
-    if not store.subscribers and store.age() >= POLL_SECONDS:
-        # Nothing is polling (no page open), so read on demand for API callers. Wait at most a few
-        # seconds: if the hub is unreachable, answer with the last readings (and the error) instead.
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.shield(store.refresh_if_older_than(POLL_SECONDS)), timeout=5)
+    await read_if_stale()
     return store.snapshot()
 
 
@@ -433,7 +475,7 @@ async def set_room_order(body: OrderIn) -> dict[str, Any]:
 
 @app.post("/api/rooms/{room_id}/target")
 async def set_target(room_id: int, body: TargetIn) -> dict[str, Any]:
-    room = store.require_room(room_id)
+    room = await require_room(room_id)
     tenths = int(round(body.temp * 2)) * 5  # nearest 0.5 C, in tenths
     override: dict[str, Any] = {"Type": "Manual", "SetPoint": tenths}
     # Changing the target during a boost (or a hold with an end time) keeps that end time, like
@@ -448,7 +490,7 @@ async def set_target(room_id: int, body: TargetIn) -> dict[str, Any]:
 
 @app.post("/api/rooms/{room_id}/boost")
 async def set_boost(room_id: int, body: BoostIn) -> dict[str, Any]:
-    store.require_room(room_id)
+    await require_room(room_id)
     if body.minutes == 0:
         payload: dict[str, Any] = {"RequestOverride": {"Type": "None"}}
     else:
@@ -471,7 +513,7 @@ async def hold_rooms(body: HoldIn) -> dict[str, Any]:
     to its schedule or manual setting by itself when the time is up."""
     room_ids = list(dict.fromkeys(body.rooms))
     for room_id in room_ids:
-        store.require_room(room_id)  # check them all before changing any
+        await require_room(room_id)  # check them all before changing any
     tenths = int(round(body.temp * 2)) * 5  # nearest 0.5 C, in tenths
     override = {"Type": "Manual", "SetPoint": tenths, "DurationMinutes": body.minutes}
     await store.run([(f"Room/{room_id}", {"RequestOverride": override}) for room_id in room_ids])
@@ -480,7 +522,7 @@ async def hold_rooms(body: HoldIn) -> dict[str, Any]:
 
 @app.post("/api/rooms/{room_id}/mode")
 async def set_mode(room_id: int, body: ModeIn) -> dict[str, Any]:
-    room = store.require_room(room_id)
+    room = await require_room(room_id)
     resource = f"Room/{room_id}"
     calls: list[tuple[str, dict[str, Any]]] = []
     # Like aioWiserHeatAPI's set_mode: drop any boost or hold first, then switch mode.
@@ -493,8 +535,7 @@ async def set_mode(room_id: int, body: ModeIn) -> dict[str, Any]:
 
 @app.post("/api/system/away")
 async def set_away(body: FlagIn) -> dict[str, Any]:
-    if store.state is None:
-        raise HTTPException(status_code=503, detail=store.error or "Still connecting to the hub.")
+    await current_state()
     # As aioWiserHeatAPI sends it: 2 is away, 0 cancels. The hub uses its own away temperature.
     await store.run(
         [("System", {"RequestOverride": {"Type": 2 if body.enabled else 0}})],
@@ -506,8 +547,7 @@ async def set_away(body: FlagIn) -> dict[str, Any]:
 
 @app.post("/api/system/eco")
 async def set_eco(body: FlagIn) -> dict[str, Any]:
-    if store.state is None:
-        raise HTTPException(status_code=503, detail=store.error or "Still connecting to the hub.")
+    await current_state()
     await store.run(
         [("System", {"EcoModeEnabled": body.enabled})],
         verify=lambda s: s["system"]["eco"] == body.enabled,
@@ -516,19 +556,12 @@ async def set_eco(body: FlagIn) -> dict[str, Any]:
     return store.snapshot()
 
 
-def require_plug(plug_id: int) -> None:
-    if store.state is None:
-        raise HTTPException(status_code=503, detail=store.error or "Still connecting to the hub.")
-    if not any(p["id"] == plug_id for p in store.state.get("plugs", [])):
-        raise HTTPException(status_code=404, detail="No such smart plug.")
-
-
 # Smart plug commands, as aioWiserHeatAPI's smart plug sends them (PATCH SmartPlug/{id}).
 @app.post("/api/plugs/{plug_id}/power")
 async def set_plug_power(plug_id: int, body: FlagIn) -> dict[str, Any]:
     """On or off. In Manual mode it stays that way; following a schedule, the hub keeps it until
     the schedule next changes."""
-    require_plug(plug_id)
+    await require_plug(plug_id)
     state = "on" if body.enabled else "off"
     await store.run(
         [(f"SmartPlug/{plug_id}", {"RequestOutput": "On" if body.enabled else "Off"})],
@@ -542,7 +575,7 @@ async def set_plug_power(plug_id: int, body: FlagIn) -> dict[str, Any]:
 
 @app.post("/api/plugs/{plug_id}/mode")
 async def set_plug_mode(plug_id: int, body: ModeIn) -> dict[str, Any]:
-    require_plug(plug_id)
+    await require_plug(plug_id)
     await store.run([(f"SmartPlug/{plug_id}", {"Mode": "Auto" if body.mode == "auto" else "Manual"})])
     return store.snapshot()
 
@@ -550,7 +583,7 @@ async def set_plug_mode(plug_id: int, body: ModeIn) -> dict[str, Any]:
 @app.post("/api/plugs/{plug_id}/away")
 async def set_plug_away(plug_id: int, body: FlagIn) -> dict[str, Any]:
     """Whether away mode turns the plug off ("Off") or leaves it alone ("NoChange")."""
-    require_plug(plug_id)
+    await require_plug(plug_id)
     await store.run([(f"SmartPlug/{plug_id}", {"AwayAction": "Off" if body.enabled else "NoChange"})])
     return store.snapshot()
 

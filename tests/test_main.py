@@ -5,7 +5,7 @@ import time
 import pytest
 
 import app.main as server
-from app.hub import MockHub
+from app.hub import HubError, MockHub
 from fastapi import HTTPException
 
 from app.main import BoostIn, HoldIn, OrderIn, Settings, Store, TargetIn, host_allowed
@@ -300,6 +300,96 @@ def test_state_reads_on_demand_only_when_nothing_is_polling(monkeypatch):
         return counts
 
     assert asyncio.run(go()) == [1, 1, 1]
+
+
+def test_write_with_no_page_open_acts_on_the_hub_as_it_is_now(monkeypatch):
+    hub = RecordingHub()
+    monkeypatch.setattr(server, "POLL_SECONDS", 10)
+    monkeypatch.setattr(server, "store", Store(hub, mock=True), raising=False)
+
+    async def go():
+        await server.store.refresh()
+        boost = {"RequestOverride": {"Type": "Boost", "DurationMinutes": 60, "IncreaseSetPointBy": 20}}
+        await MockHub.patch(hub, "Room/1", boost)  # from the Wiser app, unseen as nothing is polling
+        server.store.last_read -= 20
+        await server.set_mode(1, server.ModeIn(mode="manual"))
+
+    asyncio.run(go())
+    assert hub.sent == [("Room/1", {"RequestOverride": {"Type": "None"}}), ("Room/1", {"Mode": "Manual"})]
+
+
+class FlakyHub(MockHub):
+    """The demo hub, with reads that fail while `down` is set."""
+
+    down = False
+
+    async def read(self):
+        if self.down:
+            raise HubError("Can't reach the hub (ReadTimeout).")
+        return await super().read()
+
+
+def test_write_works_once_a_hub_that_was_down_at_startup_is_back(monkeypatch):
+    hub = FlakyHub()
+    hub.down = True
+    monkeypatch.setattr(server, "POLL_SECONDS", 10)
+    monkeypatch.setattr(server, "store", Store(hub, mock=True), raising=False)
+
+    async def go():
+        await server.store.refresh()
+        with pytest.raises(HTTPException) as caught:
+            await server.set_mode(1, server.ModeIn(mode="manual"))
+        hub.down = False
+        server.store.last_read -= 20
+        snap = await server.set_mode(1, server.ModeIn(mode="manual"))
+        return caught.value.status_code, snap
+
+    status, snap = asyncio.run(go())
+    assert status == 503
+    assert next(r for r in snap["rooms"] if r["id"] == 1)["mode"] == "manual"
+
+
+def test_failed_read_back_is_not_reported_as_a_change_that_did_not_happen(monkeypatch):
+    hub = FlakyHub()
+    monkeypatch.setattr(server, "store", Store(hub, mock=True), raising=False)
+
+    async def fail_after_patch(resource, body):
+        await MockHub.patch(hub, resource, body)
+        hub.down = True
+
+    hub.patch = fail_after_patch
+
+    async def go():
+        await server.store.refresh()
+        with pytest.raises(HTTPException) as caught:
+            await server.set_eco(server.FlagIn(enabled=True))
+        return caught.value
+
+    error = asyncio.run(go())
+    assert error.status_code == 502
+    assert "couldn't be read to confirm" in error.detail and "ReadTimeout" in error.detail
+    assert hub.eco is True
+
+
+def test_slow_plug_does_not_hold_up_other_writes(monkeypatch):
+    hub = MockHub()
+    hub.PLUG_SWITCH_SECONDS = 60
+    monkeypatch.setattr(server, "store", Store(hub, mock=True), raising=False)
+    monkeypatch.setattr(server, "PLUG_SETTLE_SECONDS", 3)
+
+    async def go():
+        await server.store.refresh()
+        await server.set_plug_mode(MockHub.PLUG_ID, server.ModeIn(mode="manual"))
+        plug = asyncio.create_task(server.set_plug_power(MockHub.PLUG_ID, server.FlagIn(enabled=True)))
+        await asyncio.sleep(0.5)
+        started = time.monotonic()
+        await server.set_target(1, TargetIn(temp=21))
+        waited = time.monotonic() - started
+        with pytest.raises(HTTPException):
+            await plug
+        return waited
+
+    assert asyncio.run(go()) < 1.5
 
 
 def test_unexpected_hub_reply_is_reported_not_raised():
